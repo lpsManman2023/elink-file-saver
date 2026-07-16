@@ -9,8 +9,11 @@
 #import "ELKRuntimeHelper.h"
 #import <objc/runtime.h>
 
-// ── 缓存：方案 C 拦截到的文件路径 ──
+// ── 文件级静态变量 ──
 static NSString *g_interceptedPath = nil;
+
+// ============================================================
+@implementation ELKFileExporter
 
 + (void)cacheInterceptedPath:(NSString *)path {
     if (path && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
