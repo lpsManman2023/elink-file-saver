@@ -13,7 +13,7 @@ static void ELKFileSaverInit(void) {
                    dispatch_get_main_queue(), ^{
         NSLog(@"\n"
               @"╔══════════════════════════════════════╗\n"
-              @"║  ELKFileSaver v1.0 已加载            ║\n"
+              @"║  喵喵插件版   v1.0 已加载            ║\n"
               @"║  长按聊天文件 → 保存到文件           ║\n"
               @"╚══════════════════════════════════════╝");
         [ELKMenuHook install];
