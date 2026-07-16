@@ -21,6 +21,11 @@ static NSMutableDictionary<NSString *, NSValue *> *g_origIMPMap = nil;
 // ── 弱引用：当前被长按的消息气泡 ──
 static __weak UIView *g_targetBubble = nil;
 
+// 前向声明：实现在文件末尾
+@interface ELKMenuHook (Private)
++ (id)findMessageFromResponder:(UIResponder *)r;
+@end
+
 // ============================================================
 //  1. UIResponder 分类 — action 实现
 // ============================================================
