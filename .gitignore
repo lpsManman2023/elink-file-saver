@@ -1,0 +1,21 @@
+# 构建产物
+*.dylib
+*.ipa
+build_workspace/
+insert_dylib
+
+# 原始 IPA（太大，不提交到 git）
+ipa/*.ipa
+!ipa/.gitkeep
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Xcode
+*.xcworkspace
+*.xcuserdata
+DerivedData/
+
+# 临时文件
+tools/insert_dylib/
