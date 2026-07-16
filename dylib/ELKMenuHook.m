@@ -6,6 +6,11 @@
 #import "ELKFileExporter.h"
 #import <objc/runtime.h>
 
+// ── 前向声明 ──
+@interface ELKMenuHook (Private)
++ (void)addExportButton:(UIViewController *)vc;
+@end
+
 // ── 唯一 Hook：UINavigationController.pushViewController: ──
 static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
 
