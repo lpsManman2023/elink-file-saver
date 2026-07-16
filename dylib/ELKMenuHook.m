@@ -48,10 +48,7 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install v8（文件系统监控）");
-
-        // 启动文件监控
-        [ELKFileExporter startFileMonitor];
+        NSLog(@"[喵喵] 🚀 install v10");
 
         // Hook pushVC
         Method m = class_getInstanceMethod([UINavigationController class],

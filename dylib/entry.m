@@ -9,7 +9,7 @@ __attribute__((constructor))
 static void ELKFileSaverInit(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        NSLog(@"[喵喵] 🚀 v8 文件系统监控");
+        NSLog(@"[喵喵] 🚀 v10 极简安全");
         [ELKMenuHook install];
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
