@@ -100,20 +100,8 @@ echo "💉 Step 5: 注入 load command..."
 BIN_PATH="$APP_DIR/$BIN_NAME"
 chmod +w "$BIN_PATH"
 
-# 下载 optool（处理大二进制更稳定）
-OPTOOL="$SCRIPT_DIR/tools/optool"
-if [ ! -f "$OPTOOL" ]; then
-    echo "   下载 optool..."
-    mkdir -p "$SCRIPT_DIR/tools"
-    curl -sL "https://github.com/alexzielenski/optool/releases/download/0.1/optool" -o "$OPTOOL"
-    chmod +x "$OPTOOL"
-fi
-
-# 用 insert_dylib 注入，加超时保护
-timeout 120 "$INSERT_DYLIB" "@executable_path/ELKFileSaver.dylib" "$BIN_PATH" --all-yes --inplace 2>&1 || {
-    echo "   ⚠️ insert_dylib 超时，换 optool..."
-    "$OPTOOL" install -c load -p "@executable_path/ELKFileSaver.dylib" -t "$BIN_PATH" 2>&1
-}
+echo "   正在注入..."
+"$INSERT_DYLIB" "@executable_path/ELKFileSaver.dylib" "$BIN_PATH" --all-yes --inplace --weak
 echo "   ✅ 已注入 LC_LOAD_DYLIB"
 
 # ── 6. 重签 ──
