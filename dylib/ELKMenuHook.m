@@ -1,13 +1,11 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - 喵喵插件（系统级菜单注入）
+//  ELKFileSaver - 喵喵插件（sendEvent 拦截方案）
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
 #import <objc/runtime.h>
-
-static SEL elkSaveAction;
 
 // ── 前向声明 ──
 @interface ELKMenuHook (Private)
@@ -16,103 +14,73 @@ static SEL elkSaveAction;
 @end
 
 // ============================================================
-//  Hook 1: UIResponder.canPerformAction:  —— 让所有 UIResponder 都对我们的 action 说 YES
+//  Hook UIWindow.sendEvent: —— 拦截所有触摸事件
 // ============================================================
-static BOOL (*orig_canPerformAction)(id, SEL, SEL, id);
-static BOOL hook_canPerformAction(id self, SEL _cmd, SEL action, id sender) {
-    if (action == elkSaveAction) {
-        return YES;  // 🔥 无论谁问，都说 YES
-    }
-    return orig_canPerformAction(self, _cmd, action, sender);
-}
+static void (*orig_sendEvent)(id, SEL, UIEvent *);
 
-// ============================================================
-//  Hook 2: UIMenuController.setMenuItems: —— 追加菜单项
-// ============================================================
-static void (*orig_setMenuItems)(id, SEL, NSArray<UIMenuItem *> *);
-static void hook_setMenuItems(id self, SEL _cmd, NSArray<UIMenuItem *> *items) {
-    NSMutableArray *new = items ? [items mutableCopy] : [NSMutableArray array];
+static void hook_sendEvent(id self, SEL _cmd, UIEvent *event) {
+    // 先调用原始实现，保证 App 完全不受影响
+    orig_sendEvent(self, _cmd, event);
 
-    BOOL has = NO;
-    for (UIMenuItem *it in new) {
-        if (it.action == elkSaveAction) { has = YES; break; }
-    }
-    if (!has) {
-        [new addObject:[[UIMenuItem alloc] initWithTitle:@"💾 保存到文件" action:elkSaveAction]];
-    }
-
-    orig_setMenuItems(self, _cmd, new);
-}
-
-// ============================================================
-//  UIResponder 分类 —— 点击菜单的处理
-// ============================================================
-@interface UIResponder (ELKSave)
-- (void)elk_saveToFiles:(id)sender;
-@end
-
-@implementation UIResponder (ELKSave)
-
-- (void)elk_saveToFiles:(id)sender {
     @try {
-        NSLog(@"[喵喵] 🔔 保存到文件");
+        NSSet *touches = [event allTouches];
+        if (touches.count != 1) return;
 
-        // 从 firstResponder 所在的视图树中搜索消息对象
-        id message = nil;
-        if ([self isKindOfClass:[UIView class]]) {
-            UIView *v = (UIView *)self;
-            while (v) {
-                message = [ELKMenuHook msgFromView:v];
-                if (!message) message = [ELKMenuHook msgInSubviews:v];
-                if (message) break;
-                v = v.superview;
-            }
-        }
+        UITouch *touch = [touches anyObject];
+        if (touch.phase != UITouchPhaseBegan) return;
 
-        if (message) {
-            [ELKFileExporter exportFileFromMessage:message];
-        } else {
-            // 全局搜索兜底
-            for (UIWindow *w in [UIApplication sharedApplication].windows) {
-                message = [ELKMenuHook msgInSubviews:w];
-                if (message) break;
-            }
-            if (message) {
-                [ELKFileExporter exportFileFromMessage:message];
-            } else {
-                [ELKFileExporter showAlertWithTitle:@"提示"
-                                            message:@"请先点开文件查看，然后返回再长按。"];
-            }
+        // 记录触摸开始时间和位置
+        CGPoint point = [touch locationInView:nil]; // window 坐标
+        NSTimeInterval ts = touch.timestamp;
+
+        // 检查触摸下面的视图是不是气泡
+        UIView *hit = [(UIWindow *)self hitTest:point withEvent:event];
+        if (!hit) return;
+
+        UIView *bubble = hit;
+        while (bubble) {
+            if ([NSStringFromClass([bubble class]) hasPrefix:@"WWKConversation"]) break;
+            bubble = bubble.superview;
         }
+        if (!bubble) return;
+
+        // 🔥 存储这次触摸信息，等待长按确认
+        // 我们用 dispatch_after 等待 0.5 秒后检查
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            // 检查触摸是否还在进行中（即用户确实在长按）
+            // touch.phase 在闭包里不准确，但我们用另一种方式：
+            // 如果在 0.5 秒后 bubble 仍然可见，说明用户没有松手
+            if (bubble.window != nil) {
+                // 尝试提取消息
+                id message = [ELKMenuHook msgFromView:bubble] ?: [ELKMenuHook msgInSubviews:bubble];
+                if (message) {
+                    NSLog(@"[喵喵] 👆 长按气泡: %@", NSStringFromClass([bubble class]));
+                    // 再延迟 0.3 秒，等 App 自己的菜单先显示
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        [ELKFileExporter exportFileFromMessage:message];
+                    });
+                }
+            }
+        });
     } @catch (NSException *e) {
-        NSLog(@"[喵喵] ❌ %@", e);
+        NSLog(@"[喵喵] ⚠️ sendEvent Hook: %@", e);
     }
 }
-
-@end
 
 // ============================================================
 @implementation ELKMenuHook
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install");
-        elkSaveAction = @selector(elk_saveToFiles:);
+        NSLog(@"[喵喵] 🚀 install（sendEvent 方案）");
 
-        // Hook 1: UIResponder.canPerformAction:withSender:
-        Method m1 = class_getInstanceMethod([UIResponder class], @selector(canPerformAction:withSender:));
-        if (m1) {
-            orig_canPerformAction = (BOOL(*)(id, SEL, SEL, id))method_getImplementation(m1);
-            method_setImplementation(m1, (IMP)hook_canPerformAction);
-            NSLog(@"[喵喵] ✅ UIResponder.canPerformAction: Hook 完成");
-        }
-
-        // Hook 2: UIMenuController.setMenuItems:
-        Method m2 = class_getInstanceMethod([UIMenuController class], @selector(setMenuItems:));
-        if (m2) {
-            orig_setMenuItems = (void(*)(id, SEL, NSArray *))method_getImplementation(m2);
-            method_setImplementation(m2, (IMP)hook_setMenuItems);
-            NSLog(@"[喵喵] ✅ UIMenuController.setMenuItems: Hook 完成");
+        Method m = class_getInstanceMethod([UIWindow class], @selector(sendEvent:));
+        if (m) {
+            orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(m);
+            method_setImplementation(m, (IMP)hook_sendEvent);
+            NSLog(@"[喵喵] ✅ sendEvent: Hook 完成");
         }
 
         NSLog(@"[喵喵] 🏁 安装完成");
@@ -123,8 +91,7 @@ static void hook_setMenuItems(id self, SEL _cmd, NSArray<UIMenuItem *> *items) {
 
 + (id)msgFromView:(UIView *)v {
     if (!v) return nil;
-    NSArray *keys = @[@"message", @"messageItem", @"messageMedia", @"bubbleData"];
-    for (NSString *key in keys) {
+    for (NSString *key in @[@"message", @"messageItem", @"messageMedia", @"bubbleData"]) {
         @try {
             id val = [v valueForKey:key];
             if (val && [NSStringFromClass([val class]) hasPrefix:@"WWKMessage"]) return val;
@@ -136,9 +103,7 @@ static void hook_setMenuItems(id self, SEL _cmd, NSArray<UIMenuItem *> *items) {
 + (id)msgInSubviews:(UIView *)root {
     if (!root) return nil;
     for (UIView *sub in root.subviews) {
-        id m = [self msgFromView:sub];
-        if (m) return m;
-        m = [self msgInSubviews:sub];
+        id m = [self msgFromView:sub] ?: [self msgInSubviews:sub];
         if (m) return m;
     }
     return nil;
