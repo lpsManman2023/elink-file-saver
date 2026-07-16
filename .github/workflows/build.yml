@@ -1,0 +1,39 @@
+name: Build ELKFileSaver IPA
+
+on:
+  workflow_dispatch:
+    # 手动触发：在 GitHub 网页上点 Actions → Build → Run workflow
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 检查 IPA 文件
+        run: |
+          echo "查找 IPA 文件..."
+          find ipa/ -name "*.ipa" -type f 2>/dev/null || echo "未找到 IPA"
+          ls -lh ipa/ 2>/dev/null || true
+
+      - name: 编译 + 注入 + 打包
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: 上传成品 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: eLink_FileSaver
+          path: eLink_FileSaver.ipa
+          retention-days: 7
+
+      - name: 完成
+        run: |
+          echo ""
+          echo "══════════════════════════════════════════"
+          echo "  下载 eLink_FileSaver.zip (在页面底部)"
+          echo "  解压后传给手机 → TrollStore 安装"
+          echo "══════════════════════════════════════════"
