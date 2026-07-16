@@ -1,4 +1,4 @@
-name: Build ELKFileSaver IPA
+name: Build ELKFileSaver dylib
 
 on:
   workflow_dispatch:
@@ -9,35 +9,24 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v5          # ← v4 → v5，消除 Node.js 24 弃用警告
+        uses: actions/checkout@v5
 
-      - name: 从最新 Release 下载 IPA
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: 编译 dylib
         run: |
-          set -x                              # ← 加调试，打印每条命令
-          echo "获取最新 Release..."
-          gh release download --repo ${{ github.repository }} --pattern "*.ipa" --dir ipa/
-          echo "下载完成："
-          ls -lh ipa/
-
-      - name: 编译 + 注入 + 打包
-        run: |
-          set -x                              # ← 加调试
           chmod +x build.sh
           ./build.sh
 
-      - name: 上传成品 IPA
+      - name: 上传 dylib
         uses: actions/upload-artifact@v4
         with:
-          name: eLink_FileSaver
-          path: eLink_FileSaver.ipa
+          name: ELKFileSaver_dylib
+          path: output/ELKFileSaver.dylib
           retention-days: 7
 
       - name: 完成
         run: |
           echo ""
           echo "══════════════════════════════════════════"
-          echo "下载 eLink_FileSaver.zip (在页面底部)"
-          echo "解压后传给手机 → TrollStore 安装"
+          echo "  下载 ELKFileSaver_dylib"
+          echo "  传到手机 → TrollFools 注入到 eLink"
           echo "══════════════════════════════════════════"
