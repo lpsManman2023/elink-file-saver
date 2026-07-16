@@ -1,33 +1,49 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - 消息菜单注入
-//
-//  策略：
-//    Hook 1: UIMenuController → 追加 "保存到文件" 菜单项
-//    Hook 2: 气泡视图 canPerformAction: → 启用自定义 action
-//    Hook 3: 备用 — 模糊匹配 UIResponder 子类
+//  ELKFileSaver - 消息菜单注入（精简稳定版）
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
 #import <objc/runtime.h>
 
-// ── 自定义 action selector ──
 static SEL elkSaveAction;
-
-// ── 保存每个类的原始 canPerformAction: IMP ──
-static NSMutableDictionary<NSString *, NSValue *> *g_origIMPMap = nil;
-
-// ── 弱引用：当前被长按的消息气泡 ──
 static __weak UIView *g_targetBubble = nil;
 
-// 前向声明：实现在文件末尾
-@interface ELKMenuHook (Private)
-+ (id)findMessageFromResponder:(UIResponder *)r;
-@end
+// ── 安全获取 keyWindow ──
+static UIWindow *safeKeyWindow(void) {
+    @try {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                    if (w.isKeyWindow) return w;
+                }
+            }
+        }
+    } @catch (...) {}
+    @try { return [UIApplication sharedApplication].keyWindow; } @catch (...) {}
+    return nil;
+}
 
 // ============================================================
-//  1. UIResponder 分类 — action 实现
+//  1. 记录当前被长按的 bubble（通过 hitTest 拦截）
+// ============================================================
+static UIView *(*orig_hitTest)(id, SEL, CGPoint, UIEvent *);
+
+static UIView *hook_hitTest(id self, SEL _cmd, CGPoint point, UIEvent *event) {
+    UIView *hit = orig_hitTest(self, _cmd, point, event);
+    if (hit) {
+        // 检查是否是气泡视图
+        NSString *cn = NSStringFromClass([hit class]);
+        if ([cn hasPrefix:@"WWKConversation"]) {
+            g_targetBubble = hit;
+        }
+    }
+    return hit;
+}
+
+// ============================================================
+//  2. UIResponder 分类 — action 实现
 // ============================================================
 @interface UIResponder (ELKSaveToFiles)
 - (void)elk_saveToFiles:(id)sender;
@@ -36,57 +52,39 @@ static __weak UIView *g_targetBubble = nil;
 @implementation UIResponder (ELKSaveToFiles)
 
 - (void)elk_saveToFiles:(id)sender {
-    NSLog(@"[ELKFileSaver] 🔔 用户点击『保存到文件』");
-
-    id message = [ELKMenuHook findMessageFromResponder:self];
-    if (message) {
-        [ELKFileExporter exportFileFromMessage:message];
-    } else {
-        [ELKFileExporter showAlertWithTitle:@"无法定位文件"
-                                    message:@"请在聊天中的文件/图片/视频消息上长按使用此功能。"];
+    @try {
+        NSLog(@"[ELKFileSaver] 🔔 用户点击『保存到文件』");
+        id message = [ELKMenuHook findMessageFromResponder:self];
+        if (message) {
+            [ELKFileExporter exportFileFromMessage:message];
+        } else {
+            [ELKFileExporter showAlertWithTitle:@"无法定位文件"
+                                        message:@"请在聊天消息上长按后使用此功能。"];
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[ELKFileSaver] ❌ elk_saveToFiles 异常: %@", e);
     }
 }
 
 @end
 
 // ============================================================
-//  2. UIMenuController Hook
+//  3. UIMenuController Hook（只追加菜单，不干扰原逻辑）
 // ============================================================
-static void (*orig_UIMenuController_setMenuItems)(id, SEL, NSArray<UIMenuItem *> *);
+static void (*orig_setMenuItems)(id, SEL, NSArray<UIMenuItem *> *);
 
-static void hook_UIMenuController_setMenuItems(id self, SEL _cmd, NSArray<UIMenuItem *> *items) {
+static void hook_setMenuItems(id self, SEL _cmd, NSArray<UIMenuItem *> *items) {
+    // 追加我们的菜单项
     NSMutableArray *new = items ? [items mutableCopy] : [NSMutableArray array];
-
-    // 去重
     BOOL has = NO;
-    for (UIMenuItem *it in new) { if (it.action == elkSaveAction) { has = YES; break; } }
+    for (UIMenuItem *it in new) {
+        if (it.action == elkSaveAction) { has = YES; break; }
+    }
     if (!has) {
         [new addObject:[[UIMenuItem alloc] initWithTitle:@"保存到文件" action:elkSaveAction]];
     }
-
-    orig_UIMenuController_setMenuItems(self, _cmd, new);
-}
-
-// ============================================================
-//  3. 气泡视图 canPerformAction: Hook
-// ============================================================
-//  返回 YES 让我们的 action 在菜单中可见
-
-static BOOL hook_canPerformAction(id self, SEL _cmd, SEL action, id sender) {
-    if (action == elkSaveAction) {
-        g_targetBubble = self;   // 记录当前气泡
-        return YES;
-    }
-
-    // 查表获取原始的 IMP
-    NSString *clsName = NSStringFromClass([self class]);
-    NSValue *val = g_origIMPMap[clsName];
-    if (val) {
-        IMP imp = val.pointerValue;
-        return ((BOOL(*)(id, SEL, SEL, id))imp)(self, _cmd, action, sender);
-    }
-    // 最终兜底：调用父类
-    return NO;
+    // 只调一次原始实现
+    orig_setMenuItems(self, _cmd, new);
 }
 
 // ============================================================
@@ -95,82 +93,64 @@ static BOOL hook_canPerformAction(id self, SEL _cmd, SEL action, id sender) {
 @implementation ELKMenuHook
 
 + (void)install {
-    NSLog(@"[ELKFileSaver] 🚀 install");
+    @try {
+        NSLog(@"[ELKFileSaver] 🚀 install");
+        elkSaveAction = @selector(elk_saveToFiles:);
 
-    elkSaveAction = @selector(elk_saveToFiles:);
-    g_origIMPMap = [NSMutableDictionary dictionary];
-
-    // ── Hook A: UIMenuController ──
-    {
-        Method m = class_getInstanceMethod([UIMenuController class], @selector(setMenuItems:));
-        if (m) {
-            orig_UIMenuController_setMenuItems = (void(*)(id, SEL, NSArray *))method_getImplementation(m);
-            method_setImplementation(m, (IMP)hook_UIMenuController_setMenuItems);
-            NSLog(@"[ELKFileSaver] ✅ UIMenuController");
+        // ── Hook A: UIWindow.hitTest 记录被点击的气泡 ──
+        // 这个方法非常简单，不会干扰任何逻辑
+        Method ht = class_getInstanceMethod([UIWindow class], @selector(hitTest:withEvent:));
+        if (ht) {
+            orig_hitTest = (UIView *(*)(id, SEL, CGPoint, UIEvent *))method_getImplementation(ht);
+            method_setImplementation(ht, (IMP)hook_hitTest);
+            NSLog(@"[ELKFileSaver] ✅ hitTest hook 完成");
         }
+
+        // ── Hook B: UIMenuController 追加菜单 ──
+        Method sm = class_getInstanceMethod([UIMenuController class], @selector(setMenuItems:));
+        if (sm) {
+            orig_setMenuItems = (void(*)(id, SEL, NSArray *))method_getImplementation(sm);
+            method_setImplementation(sm, (IMP)hook_setMenuItems);
+            NSLog(@"[ELKFileSaver] ✅ UIMenuController hook 完成");
+        }
+
+        NSLog(@"[ELKFileSaver] 🏁 安装完成");
+    } @catch (NSException *e) {
+        NSLog(@"[ELKFileSaver] ❌ install 异常: %@", e);
     }
-
-    // ── Hook B: 已知的气泡视图类 ──
-    NSArray<NSString *> *names = @[
-        @"WWKConversationStandardBubbleView",
-        @"WWKConversationFileBubbleView",
-        @"WWKConversationImageBubbleView",
-        @"WWKConversationVideoBubbleView",
-        @"WWKConversationVoiceBubbleView",
-        @"WWKConversationTextBubbleView",
-        @"WWKConversationEncryptBubbleView",
-        @"WWKConversationRedEnvelopesBubbleView",
-        @"WWKConversationWeAppTemplateCardBubbleView",
-        @"WWKConversationPersonalCardBubbleView",
-        @"WWKConversationChatApplicationBubbleView",
-        @"WWKConversationCardCellBubbleView",
-        @"WWKConversationCardCellMaskedBubbleView",
-        @"WWKConversationLishiTextBubbleView",
-        @"WWKConversationLocationBubbleView",
-        @"WWKConversationLinkBubbleView",
-        @"WWKConversationAppShareBubbleView",
-    ];
-
-    for (NSString *name in names) {
-        Class cls = NSClassFromString(name);
-        if (!cls) continue;
-
-        Method m = class_getInstanceMethod(cls, @selector(canPerformAction:withSender:));
-        if (!m) continue;
-
-        // 保存原始 IMP
-        IMP orig = method_getImplementation(m);
-        g_origIMPMap[name] = [NSValue valueWithPointer:orig];
-
-        method_setImplementation(m, (IMP)hook_canPerformAction);
-        NSLog(@"[ELKFileSaver] ✅ canPerformAction: %@", name);
-    }
-
-    // ── 最终数量 ──
-    NSLog(@"[ELKFileSaver] 🏁 安装完成, hooked=%lu 个气泡类", (unsigned long)g_origIMPMap.count);
 }
 
 // ============================================================
 //  5. 从 Responder 链中查找消息对象
 // ============================================================
 + (id)findMessageFromResponder:(UIResponder *)r {
-    if (g_targetBubble) {
-        id m = [self msgFromView:g_targetBubble];
-        if (m) return m;
-    }
-
-    while (r) {
-        if ([r isKindOfClass:[UIView class]]) {
-            id m = [self msgFromView:(UIView *)r] ?: [self msgInSubviews:(UIView *)r];
+    @try {
+        // 优先：之前 hitTest 记录的气泡
+        if (g_targetBubble) {
+            id m = [self msgFromView:g_targetBubble];
             if (m) return m;
         }
-        r = r.nextResponder;
-    }
 
-    return [self msgInSubviews:[UIApplication sharedApplication].keyWindow];
+        // 遍历 responder chain
+        while (r) {
+            if ([r isKindOfClass:[UIView class]]) {
+                id m = [self msgFromView:(UIView *)r] ?: [self msgInSubviews:(UIView *)r];
+                if (m) return m;
+            }
+            r = r.nextResponder;
+        }
+
+        // 兜底：全窗口搜索
+        UIWindow *win = safeKeyWindow();
+        if (win) return [self msgInSubviews:win];
+    } @catch (NSException *e) {
+        NSLog(@"[ELKFileSaver] ❌ findMessage 异常: %@", e);
+    }
+    return nil;
 }
 
 + (id)msgFromView:(UIView *)v {
+    if (!v) return nil;
     for (NSString *key in @[@"message", @"messageItem", @"messageMedia",
                             @"mediaContext", @"bubbleData", @"data", @"wwMessage",
                             @"fileMessage", @"imageMessage", @"videoMessage"]) {
@@ -186,8 +166,11 @@ static BOOL hook_canPerformAction(id self, SEL _cmd, SEL action, id sender) {
 }
 
 + (id)msgInSubviews:(UIView *)root {
+    if (!root) return nil;
     for (UIView *sub in root.subviews) {
-        id m = [self msgFromView:sub] ?: [self msgInSubviews:sub];
+        id m = [self msgFromView:sub];
+        if (m) return m;
+        m = [self msgInSubviews:sub];
         if (m) return m;
     }
     return nil;
