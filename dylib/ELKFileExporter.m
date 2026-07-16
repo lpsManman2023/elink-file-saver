@@ -47,6 +47,8 @@ static int fileScore(NSString *path, unsigned long long size) {
 }
 
 // ── 拍摄快照（在预览打开前调用） ──
+@implementation ELKFileExporter
+
 + (void)takeBeforeSnapshot {
     g_beforeSnapshot = [NSMutableSet set];
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -132,9 +134,6 @@ static int fileScore(NSString *path, unsigned long long size) {
     g_cachedFile = nil;
     return nil;
 }
-
-// ============================================================
-@implementation ELKFileExporter
 
 + (void)shareFileAtPath:(NSString *)filePath {
     NSURL *url = [NSURL fileURLWithPath:filePath];
