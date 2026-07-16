@@ -1,67 +1,107 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - 喵喵插件（单手势方案）
+//  ELKFileSaver - 喵喵插件（预览页加导出按钮 v5）
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
 #import <objc/runtime.h>
 
-@interface ELKMenuHook (Private)
-+ (id)msgFromView:(UIView *)v;
-+ (id)msgInSubviews:(UIView *)root;
-@end
+// ── 缓存：预览打开时立即搜到的解密文件路径 ──
+static NSString *g_cachedPath = nil;
+
+// ── 防止 present hook 递归（我们自己的弹窗不能触发 hook） ──
+static BOOL g_inExportFlow = NO;
 
 // ============================================================
-@interface ELKGestureHandler : NSObject <UIGestureRecognizerDelegate>
-@end
+//  Hook 1: UINavigationController.pushViewController:
+// ============================================================
+static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
 
-@implementation ELKGestureHandler
+static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) {
+    orig_pushVC(self, _cmd, vc, animated);
 
-- (void)handleLongPress:(UILongPressGestureRecognizer *)gr {
-    if (gr.state != UIGestureRecognizerStateBegan) return;
+    if (g_inExportFlow) return;
 
-    UIView *rootView = gr.view;
-    CGPoint point = [gr locationInView:rootView];
-    UIView *hit = [rootView hitTest:point withEvent:nil];
-    if (!hit) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [ELKMenuHook onNewVC:vc];
+    });
+}
 
-    UIView *bubble = hit;
-    while (bubble) {
-        if ([NSStringFromClass([bubble class]) hasPrefix:@"WWKConversation"]) break;
-        bubble = bubble.superview;
+// ============================================================
+//  Hook 2: UIViewController.presentViewController:animated:completion:
+// ============================================================
+static void (*orig_presentVC)(id, SEL, UIViewController *, BOOL, void(^)(void));
+
+static void hook_presentVC(id self, SEL _cmd, UIViewController *vc,
+                           BOOL animated, void(^completion)(void)) {
+    // 🔥 我们的导出流程中的 present 不能触发 hook
+    BOOL wasExportFlow = g_inExportFlow;
+    if (!wasExportFlow) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [ELKMenuHook onNewVC:vc];
+        });
     }
-    if (!bubble) return;
-
-    id message = [ELKMenuHook msgFromView:bubble] ?: [ELKMenuHook msgInSubviews:bubble];
-    if (!message) return;
-
-    NSLog(@"[喵喵] 👆 长按: %@", NSStringFromClass([bubble class]));
-    [ELKFileExporter exportFileFromMessage:message];
+    orig_presentVC(self, _cmd, vc, animated, completion);
 }
 
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr
-shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
-    return YES;
+// ============================================================
+//  导出按钮点击
+// ============================================================
+static void onExportTap(void) {
+    if (g_cachedPath && [[NSFileManager defaultManager] fileExistsAtPath:g_cachedPath]) {
+        NSLog(@"[喵喵] 📤 导出缓存文件: %@", g_cachedPath);
+        g_inExportFlow = YES;
+        [ELKFileExporter shareFileAtPath:g_cachedPath];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            g_inExportFlow = NO;
+        });
+    } else {
+        // 兜底：重新搜索
+        UIViewController *top = [ELKRuntimeHelper topViewController];
+        if (top && top.view) {
+            NSString *found = [ELKFileExporter findDecryptedFileInView:top.view];
+            if (found) {
+                g_inExportFlow = YES;
+                [ELKFileExporter shareFileAtPath:found];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    g_inExportFlow = NO;
+                });
+                return;
+            }
+        }
+        [ELKFileExporter showAlertWithTitle:@"未找到文件"
+                                     message:@"无法定位解密文件。" ];
+    }
 }
-
-@end
-
-static ELKGestureHandler *g_handler = nil;
 
 // ============================================================
 @implementation ELKMenuHook
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install（单手势方案）");
+        NSLog(@"[喵喵] 🚀 install v5");
 
-        g_handler = [[ELKGestureHandler alloc] init];
+        Method m1 = class_getInstanceMethod([UINavigationController class],
+                                            @selector(pushViewController:animated:));
+        if (m1) {
+            orig_pushVC = (void(*)(id, SEL, UIViewController *, BOOL))method_getImplementation(m1);
+            method_setImplementation(m1, (IMP)hook_pushVC);
+            NSLog(@"[喵喵] ✅ pushVC Hook 完成");
+        }
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [self tryAddGesture];
-        });
+        Method m2 = class_getInstanceMethod([UIViewController class],
+                                            @selector(presentViewController:animated:completion:));
+        if (m2) {
+            orig_presentVC = (void(*)(id, SEL, UIViewController *, BOOL, void(^)(void)))
+                method_getImplementation(m2);
+            method_setImplementation(m2, (IMP)hook_presentVC);
+            NSLog(@"[喵喵] ✅ presentVC Hook 完成");
+        }
 
         NSLog(@"[喵喵] 🏁 安装完成");
     } @catch (NSException *e) {
@@ -69,57 +109,73 @@ static ELKGestureHandler *g_handler = nil;
     }
 }
 
-+ (void)tryAddGesture {
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.hidden || !w.rootViewController) continue;
-        if (w.bounds.size.width < 100 || w.bounds.size.height < 100) continue;
++ (BOOL)isPreviewVC:(UIViewController *)vc {
+    NSString *cn = NSStringFromClass([vc class]);
 
-        BOOL exists = NO;
-        for (UIGestureRecognizer *gr in w.gestureRecognizers) {
-            if ([gr.delegate isKindOfClass:[ELKGestureHandler class]]) { exists = YES; break; }
+    // Apple QuickLook
+    if ([cn hasPrefix:@"QLPreview"]) return YES;
+
+    // WeWork 自定义预览页
+    if ([cn hasPrefix:@"WWK"]) {
+        if ([cn containsString:@"File"] || [cn containsString:@"Image"] ||
+            [cn containsString:@"Video"] || [cn containsString:@"Doc"] ||
+            [cn containsString:@"Preview"] || [cn containsString:@"Detail"] ||
+            [cn containsString:@"Photo"] || [cn containsString:@"Media"]) {
+            return YES;
         }
-        if (exists) return;
-
-        UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc]
-            initWithTarget:g_handler action:@selector(handleLongPress:)];
-        lp.minimumPressDuration = 0.5;
-        lp.cancelsTouchesInView = NO;
-        lp.delaysTouchesBegan = NO;
-        lp.delaysTouchesEnded = NO;
-        lp.delegate = g_handler;
-
-        [w addGestureRecognizer:lp];
-        NSLog(@"[喵喵] ✅ 手势已添加");
-        return;
     }
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+    // UIDocumentInteractionController
+    if ([cn containsString:@"DocumentInteraction"]) return YES;
+
+    return NO;
+}
+
++ (void)onNewVC:(UIViewController *)vc {
+    if (!vc || g_inExportFlow) return;
+    if (![self isPreviewVC:vc]) return;
+
+    NSLog(@"[喵喵] 🎯 预览页: %@", NSStringFromClass([vc class]));
+
+    // 🔥 立即搜索解密文件
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        [self tryAddGesture];
+        if (vc.view) {
+            NSString *path = [ELKFileExporter findDecryptedFileInView:vc.view];
+            if (path) {
+                g_cachedPath = path;
+            }
+            // 加按钮
+            [self addExportButton:vc];
+        }
     });
 }
 
-+ (id)msgFromView:(UIView *)v {
-    if (!v) return nil;
-    for (NSString *key in @[@"message", @"messageItem", @"messageMedia", @"bubbleData"]) {
-        @try {
-            id val = [v valueForKey:key];
-            if (val) {
-                NSString *cn = NSStringFromClass([val class]);
-                if ([cn hasPrefix:@"WWKMessage"] || [cn containsString:@"Media"]) return val;
-            }
-        } @catch (...) {}
++ (void)addExportButton:(UIViewController *)vc {
+    // 去重
+    if (vc.navigationItem.rightBarButtonItems) {
+        for (UIBarButtonItem *item in vc.navigationItem.rightBarButtonItems) {
+            if ([item.title isEqualToString:@"📤导出"]) return;
+        }
     }
-    return nil;
+
+    UIBarButtonItem *btn = [[UIBarButtonItem alloc]
+        initWithTitle:@"📤导出"
+        style:UIBarButtonItemStylePlain
+        target:self
+        action:@selector(onExportButtonTap)];
+
+    NSMutableArray *items = vc.navigationItem.rightBarButtonItems
+        ? [vc.navigationItem.rightBarButtonItems mutableCopy]
+        : [NSMutableArray array];
+    [items addObject:btn];
+    vc.navigationItem.rightBarButtonItems = items;
+
+    NSLog(@"[喵喵] ✅ 按钮已添加");
 }
 
-+ (id)msgInSubviews:(UIView *)root {
-    if (!root) return nil;
-    for (UIView *sub in root.subviews) {
-        id m = [self msgFromView:sub] ?: [self msgInSubviews:sub];
-        if (m) return m;
-    }
-    return nil;
++ (void)onExportButtonTap {
+    onExportTap();
 }
 
 @end
