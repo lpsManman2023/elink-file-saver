@@ -11,14 +11,12 @@
 + (NSString *)findDecryptedFileInView:(UIView *)view {
     if (!view) return nil;
 
-    // 遍历所有 NSString 属性，找 /tmp/ 或 /Caches/ 下的文件
     NSMutableArray *allViews = [NSMutableArray arrayWithObject:view];
-    NSInteger idx = 0;
+    NSUInteger idx = 0;
     while (idx < allViews.count) {
         UIView *v = allViews[idx];
         idx++;
 
-        // 检查这个视图的所有属性
         unsigned int count = 0;
         objc_property_t *props = class_copyPropertyList([v class], &count);
         for (unsigned int i = 0; i < count && i < 100; i++) {
@@ -45,7 +43,6 @@
         }
         free(props);
 
-        // 继续遍历子视图
         for (UIView *sub in v.subviews) {
             [allViews addObject:sub];
         }
@@ -56,10 +53,8 @@
 + (void)exportFileFromMessage:(id)message {
     if (!message) return;
 
-    // 从消息对象搜文件路径
     NSString *path = nil;
     @try {
-        // 尝试 KVC
         for (NSString *key in @[@"localPath", @"fileLocalPath", @"filePath",
                                 @"previewLocalPath", @"previewPath", @"cachePath",
                                 @"downloadPath", @"url"]) {
@@ -91,12 +86,13 @@
     UIActivityViewController *shareVC = [[UIActivityViewController alloc]
         initWithActivityItems:@[url] applicationActivities:nil];
 
-    // iPad 兼容
     if (shareVC.popoverPresentationController) {
         UIViewController *top = [ELKRuntimeHelper topViewController];
+        CGFloat hw = top.view.bounds.size.width / 2.0;
+        CGFloat hh = top.view.bounds.size.height / 2.0;
         shareVC.popoverPresentationController.sourceView = top.view;
         shareVC.popoverPresentationController.sourceRect =
-            (CGRect){top.view.bounds.size.width/2, top.view.bounds.size.height/2, 0, 0};
+            (CGRect){{hw, hh}, {0, 0}};
         shareVC.popoverPresentationController.permittedArrowDirections = 0;
     }
 
