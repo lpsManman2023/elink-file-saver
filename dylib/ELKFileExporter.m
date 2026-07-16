@@ -1,6 +1,6 @@
 //
 //  ELKFileExporter.m
-//  ELKFileSaver - 喵喵插件（重搜索版）
+//  ELKFileSaver - 喵喵插件
 //
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
@@ -8,58 +8,48 @@
 
 @implementation ELKFileExporter
 
-/// 深度搜索文件路径
 + (NSString *)searchFileIn:(id)obj depth:(int)depth {
     if (!obj || depth > 4) return nil;
 
-    // 路径类 key
     NSArray *pathKeys = @[@"localPath", @"fileLocalPath", @"filePath", @"path",
                           @"localFilePath", @"recordLocalPath", @"previewLocalPath",
                           @"previewPath", @"cachePath", @"downloadPath", @"url", @"localUrl"];
 
-    NSString *bestNonTemp = nil;
+    NSString *best = nil;
 
     for (NSString *key in pathKeys) {
         @try {
             id val = [obj valueForKey:key];
             if (![val isKindOfClass:[NSString class]] || [(NSString *)val length] < 5) continue;
             NSString *s = val;
-            if ([s hasPrefix:@"http://"] || [s hasPrefix:@"https://"]) continue;
+            if ([s hasPrefix:@"http"] || [s hasPrefix:@"https"]) continue;
             if ([s hasPrefix:@"file://"]) s = [[NSURL URLWithString:s] path];
             if (![s hasPrefix:@"/"]) continue;
-
-            BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:s];
-            if (!exists) continue;
-
+            if (![[NSFileManager defaultManager] fileExistsAtPath:s]) continue;
             unsigned long long sz = [[[NSFileManager defaultManager] attributesOfItemAtPath:s error:nil] fileSize];
-            if (sz < 100) continue; // 小于 100 字节忽略
-
-            // 临时/缓存目录 = 解密文件，直接返回
+            if (sz < 100) continue;
             if ([s containsString:@"/tmp/"] || [s containsString:@"/Caches/"] || [s containsString:@"/Temp/"]) {
                 NSLog(@"[喵喵] 🔥 解密文件: %@ (%llu bytes)", key, sz);
                 return s;
             }
-            if (!bestNonTemp) bestNonTemp = s;
+            if (!best) best = s;
         } @catch (...) {}
     }
 
-    // 深入子对象
     NSArray *childKeys = @[@"media", @"mediaItem", @"messageMedia",
                            @"fileMessage", @"imageMessage", @"videoMessage",
-                           @"voiceMessage", @"content", @"data", @"attachment", @"file"];
+                           @"voiceMessage", @"content", @"data", @"attachment"];
 
     for (NSString *key in childKeys) {
         @try {
             id child = [obj valueForKey:key];
-            if (child && ![child isKindOfClass:[NSString class]] &&
-                ![child isKindOfClass:[NSNumber class]] && child != obj) {
-                NSString *f = [self searchFileIn:child depth:depth + 1];
+            if (child && ![child isKindOfClass:[NSString class]] && ![child isKindOfClass:[NSNumber class]] && child != obj) {
+                NSString *f = [self searchFileIn:child depth:depth+1];
                 if (f) return f;
             }
         } @catch (...) {}
     }
 
-    // 属性遍历
     if (depth <= 1) {
         unsigned int count = 0;
         objc_property_t *props = class_copyPropertyList([obj class], &count);
@@ -75,15 +65,12 @@
                     if ([s hasPrefix:@"/"] && [[NSFileManager defaultManager] fileExistsAtPath:s]) {
                         unsigned long long sz = [[[NSFileManager defaultManager] attributesOfItemAtPath:s error:nil] fileSize];
                         if (sz > 100) {
-                            if ([s containsString:@"/tmp/"] || [s containsString:@"/Caches/"]) {
-                                free(props); return s;
-                            }
-                            if (!bestNonTemp) bestNonTemp = s;
+                            if ([s containsString:@"/tmp/"] || [s containsString:@"/Caches/"]) { free(props); return s; }
+                            if (!best) best = s;
                         }
                     }
-                } else if (val && ![val isKindOfClass:[NSString class]] &&
-                           ![val isKindOfClass:[NSNumber class]] && val != obj) {
-                    NSString *f = [self searchFileIn:val depth:depth + 1];
+                } else if (val && ![val isKindOfClass:[NSString class]] && ![val isKindOfClass:[NSNumber class]] && val != obj) {
+                    NSString *f = [self searchFileIn:val depth:depth+1];
                     if (f) { free(props); return f; }
                 }
             } @catch (...) {}
@@ -91,7 +78,7 @@
         free(props);
     }
 
-    return bestNonTemp;
+    return best;
 }
 
 + (void)exportFileFromMessage:(id)message {
@@ -125,7 +112,7 @@
         });
     } else {
         [self showAlertWithTitle:@"文件需先解密"
-                         message:@"① 点一下文件，打开预览\n② 返回聊天\n③ 再次长按 → 保存\n\n提示: 点开预览这一步很重要！"];
+                         message:@"① 点一下文件，打开预览\n② 返回聊天\n③ 再次长按 → 💾 保存到文件"];
     }
 }
 
