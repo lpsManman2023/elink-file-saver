@@ -204,7 +204,7 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
                 [found appendFormat:@" | \"%@\"=NSURL:%@", pName, [val absoluteString]];
             } else if (val && ![val isKindOfClass:[NSNumber class]] &&
                        ![val isKindOfClass:[NSString class]] && ![val isKindOfClass:[NSURL class]] &&
-                       ![val isKindOfClass:[UIView class]] && ![val isKindOfClass:[CALayer class]]) {
+                       ![val isKindOfClass:[UIView class]] && ![val isKindOfClass:NSClassFromString(@"CALayer")]) {
                 [found appendFormat:@" | \"%@\"=%@", pName, NSStringFromClass([val class])];
             }
         } @catch (...) {}
@@ -238,7 +238,7 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
             } else if ([val isKindOfClass:[NSURL class]]) {
                 [s appendFormat:@"    %@ (%@) = NSURL:%@\n", pName, [self typeFromAttr:typeStr], [val absoluteString]];
             } else if (val && ![val isKindOfClass:[NSNumber class]] &&
-                       ![val isKindOfClass:[UIView class]] && ![val isKindOfClass:[CALayer class]]) {
+                       ![val isKindOfClass:[UIView class]] && ![val isKindOfClass:NSClassFromString(@"CALayer")]) {
                 [s appendFormat:@"    %@ (%@) = %@\n", pName, [self typeFromAttr:typeStr], NSStringFromClass([val class])];
             }
         } @catch (...) {}
