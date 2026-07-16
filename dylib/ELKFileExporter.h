@@ -7,8 +7,9 @@
 
 @interface ELKFileExporter : NSObject
 
-+ (void)exportFileFromMessage:(id)message;
++ (void)shareFileAtPath:(NSString *)filePath;
 + (NSString *)findDecryptedFileInView:(UIView *)view;
++ (void)exportFileFromMessage:(id)message;
 + (void)showAlertWithTitle:(NSString *)title message:(NSString *)message;
 
 @end
