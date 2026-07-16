@@ -1,32 +1,49 @@
 //
 //  entry.m
-//  ELKFileSaver - Dylib 入口
-//
-//  __attribute__((constructor)) 会在 dylib 被加载时自动调用
+//  ELKFileSaver - Dylib 入口（喵喵专用插件版）
 //
 #import "ELKMenuHook.h"
 #import <UIKit/UIKit.h>
 
+static UIViewController *getTopVC(void) {
+    @try {
+        UIWindow *keyWin = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                    if (w.isKeyWindow) { keyWin = w; break; }
+                }
+            }
+        }
+        if (!keyWin) keyWin = [UIApplication sharedApplication].keyWindow;
+        UIViewController *root = keyWin.rootViewController;
+        while (root.presentedViewController) root = root.presentedViewController;
+        return root;
+    } @catch (...) { return nil; }
+}
+
 __attribute__((constructor))
 static void ELKFileSaverInit(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        NSLog(@"\n"
-              @"╔══════════════════════════════════════╗\n"
-              @"║  喵喵插件版   v1.0 已加载            ║\n"
-              @"║  长按聊天文件 → 保存到文件           ║\n"
-              @"╚══════════════════════════════════════╝");
+        NSLog(@"[喵喵插件] 🚀 dylib 已加载");
         [ELKMenuHook install];
 
-        // ── 调试弹窗：打开 App 后弹出表示 dylib 加载成功 ──
         UIAlertController *alert = [UIAlertController
-            alertControllerWithTitle:@"ELKFileSaver"
-            message:@"✅ dylib 注入成功！\n\n如果长按文件菜单没出现「保存到文件」，说明 Hook 类名需要修正。"
+            alertControllerWithTitle:@"🐱 喵喵专用插件"
+            message:@"✅ 插件注入成功！\n\n长按聊天中的文件/图片/视频\n菜单会出现「保存到文件」\n点击即可导出到手机本地文件夹"
             preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"喵～知道了" style:UIAlertActionStyleDefault handler:nil]];
 
-        UIViewController *root = [UIApplication sharedApplication].keyWindow.rootViewController;
-        while (root.presentedViewController) root = root.presentedViewController;
-        [root presentViewController:alert animated:YES completion:nil];
+        UIViewController *vc = getTopVC();
+        if (vc) {
+            [vc presentViewController:alert animated:YES completion:nil];
+        } else {
+            // 兜底：延迟再试
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                UIViewController *vc2 = getTopVC();
+                if (vc2) [vc2 presentViewController:alert animated:YES completion:nil];
+            });
+        }
     });
 }
