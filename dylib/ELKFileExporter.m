@@ -1,6 +1,6 @@
 //
 //  ELKFileExporter.m
-//  ELKFileSaver - 文件导出实现（增强版）
+//  ELKFileSaver - 文件导出实现（优先临时解密路径版）
 //
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
@@ -8,15 +8,18 @@
 
 @implementation ELKFileExporter
 
-/// 递归查找 key，深入嵌套对象
+/// 递归查找文件路径，优先临时目录
 + (NSString *)findPathInObject:(id)obj depth:(int)depth {
     if (!obj || depth > 3) return nil;
 
-    // ── 第1轮：直接查常用的 path 属性 ──
+    NSString *foundPath = nil;
+
+    // ── 第1轮：查所有可能的 path 属性 ──
     NSArray *pathKeys = @[
         @"localPath", @"fileLocalPath", @"filePath", @"path",
         @"localFilePath", @"recordLocalPath", @"thumbLocalPath",
         @"originLocalPath", @"downloadPath", @"cachePath",
+        @"previewLocalPath", @"previewPath",
         @"url", @"fileUrl", @"localUrl"
     ];
 
@@ -26,14 +29,20 @@
             if ([val isKindOfClass:[NSString class]] && [(NSString *)val length] > 5) {
                 NSString *str = (NSString *)val;
                 if (![str hasPrefix:@"http://"] && ![str hasPrefix:@"https://"]) {
-                    if ([str hasPrefix:@"/"] || [str hasPrefix:@"file://"]) {
-                        if ([str hasPrefix:@"file://"]) {
-                            str = [[NSURL URLWithString:str] path];
-                        }
-                        if ([[NSFileManager defaultManager] fileExistsAtPath:str]) {
-                            NSLog(@"[喵喵插件] ✅ 找到文件: %@ = %@", key, str);
+                    if ([str hasPrefix:@"file://"]) {
+                        str = [[NSURL URLWithString:str] path];
+                    }
+                    if ([str hasPrefix:@"/"] && [[NSFileManager defaultManager] fileExistsAtPath:str]) {
+                        // 🔥 优先临时目录（解密后的文件在这里）
+                        if ([str containsString:@"/tmp/"] ||
+                            [str containsString:@"/Caches/"] ||
+                            [str containsString:@"/Temp/"]) {
+                            NSLog(@"[喵喵插件] 🔥 找到解密文件: %@ = %@", key, str);
                             return str;
                         }
+                        // 其他路径先记下来
+                        if (!foundPath) foundPath = str;
+                        NSLog(@"[喵喵插件] 📁 找到文件(非临时): %@ = %@", key, str);
                     }
                 }
             }
@@ -54,19 +63,19 @@
             if (child && ![child isKindOfClass:[NSString class]] &&
                 ![child isKindOfClass:[NSNumber class]] && ![child isEqual:obj]) {
                 NSString *found = [self findPathInObject:child depth:depth + 1];
-                if (found) return found;
+                if (found && [found containsString:@"/tmp/"]) return found; // 临时路径优先
+                if (found && !foundPath) foundPath = found;
             }
         } @catch (...) {}
     }
 
-    // ── 第3轮：遍历所有属性 ──
+    // ── 第3轮：遍历所有 ObjC 属性 ──
     if (depth == 0) {
         unsigned int count = 0;
         objc_property_t *props = class_copyPropertyList([obj class], &count);
         for (unsigned int i = 0; i < count && i < 50; i++) {
             const char *name = property_getName(props[i]);
             NSString *propName = [NSString stringWithUTF8String:name];
-
             if ([pathKeys containsObject:propName] || [childKeys containsObject:propName]) continue;
 
             @try {
@@ -74,28 +83,28 @@
                 if ([val isKindOfClass:[NSString class]] && [(NSString *)val length] > 5) {
                     NSString *str = (NSString *)val;
                     if (![str hasPrefix:@"http://"] && ![str hasPrefix:@"https://"]) {
-                        if ([str hasPrefix:@"/"] || [str hasPrefix:@"file://"]) {
-                            if ([str hasPrefix:@"file://"]) {
-                                str = [[NSURL URLWithString:str] path];
-                            }
-                            if ([[NSFileManager defaultManager] fileExistsAtPath:str]) {
-                                NSLog(@"[喵喵插件] ✅ 找到文件(属性遍历): %@ = %@", propName, str);
+                        if ([str hasPrefix:@"file://"]) str = [[NSURL URLWithString:str] path];
+                        if ([str hasPrefix:@"/"] && [[NSFileManager defaultManager] fileExistsAtPath:str]) {
+                            if ([str containsString:@"/tmp/"] ||
+                                [str containsString:@"/Caches/"]) {
                                 free(props);
                                 return str;
                             }
+                            if (!foundPath) foundPath = str;
                         }
                     }
                 } else if (val && ![val isKindOfClass:[NSString class]] &&
                            ![val isKindOfClass:[NSNumber class]] && ![val isEqual:obj]) {
                     NSString *found = [self findPathInObject:val depth:depth + 1];
-                    if (found) { free(props); return found; }
+                    if (found && [found containsString:@"/tmp/"]) { free(props); return found; }
+                    if (found && !foundPath) foundPath = found;
                 }
             } @catch (...) {}
         }
         free(props);
     }
 
-    return nil;
+    return foundPath;
 }
 
 + (void)exportFileFromMessage:(id)message {
@@ -109,42 +118,33 @@
     NSString *localPath = [self findPathInObject:message depth:0];
 
     if (!localPath) {
-        @try {
-            id preview = [message valueForKey:@"previewLocalPath"];
-            if (!preview) preview = [message valueForKey:@"previewPath"];
-            if (!preview) preview = [message valueForKey:@"thumbnailPath"];
-            if (preview && [preview isKindOfClass:[NSString class]]) {
-                localPath = preview;
-            }
-        } @catch (...) {}
-    }
-
-    if (!localPath) {
         NSLog(@"[喵喵插件] ❌ 未找到文件路径");
         [self showAlertWithTitle:@"未找到文件"
-                         message:@"可能原因：\n1. 文件还未下载，请先点开文件查看\n2. 该消息类型暂不支持\n\n请先点开文件确认可以正常查看后再试。"];
+                         message:@"请先点开文件查看，\n文件解密后再长按导出。\n\n步骤：\n1. 点一下消息查看文件\n2. 返回后长按 → 保存到文件"];
         return;
     }
 
     if (![[NSFileManager defaultManager] fileExistsAtPath:localPath]) {
         [self showAlertWithTitle:@"文件不存在"
-                         message:[NSString stringWithFormat:@"路径: %@\n文件可能已被清理或尚未下载完成。", [localPath lastPathComponent]]];
+                         message:[NSString stringWithFormat:@"路径: %@\n文件可能已被清理。", [localPath lastPathComponent]]];
         return;
     }
+
+    NSLog(@"[喵喵插件] 📤 导出文件: %@ (%llu bytes)",
+          localPath,
+          [[[NSFileManager defaultManager] attributesOfItemAtPath:localPath error:nil] fileSize]);
 
     [self exportFileAtPath:localPath withOriginalName:nil];
 }
 
 + (void)exportFileAtPath:(NSString *)filePath withOriginalName:(NSString *)origName {
-    NSURL *fileURL = [NSURL fileURLWithPath:filePath];
     NSString *fileName = origName ?: [filePath lastPathComponent];
-
     NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
     [[NSFileManager defaultManager] removeItemAtPath:tmpPath error:nil];
 
     NSError *copyErr = nil;
     [[NSFileManager defaultManager] copyItemAtPath:filePath toPath:tmpPath error:&copyErr];
-    NSURL *exportURL = copyErr ? fileURL : [NSURL fileURLWithPath:tmpPath];
+    NSURL *exportURL = copyErr ? [NSURL fileURLWithPath:filePath] : [NSURL fileURLWithPath:tmpPath];
 
     UIDocumentPickerViewController *picker = nil;
     if (@available(iOS 14.0, *)) {
@@ -155,10 +155,7 @@
     }
 
     UIViewController *topVC = [ELKRuntimeHelper topViewController];
-    if (!topVC) {
-        NSLog(@"[喵喵插件] ❌ 无法获取顶层 ViewController");
-        return;
-    }
+    if (!topVC) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         [topVC presentViewController:picker animated:YES completion:^{
