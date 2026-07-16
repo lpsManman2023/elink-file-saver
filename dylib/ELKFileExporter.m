@@ -1,57 +1,129 @@
 //
 //  ELKFileExporter.m
-//  ELKFileSaver - 喵喵插件（诊断版）
+//  ELKFileSaver - 喵喵插件（C+F组合方案）
+//
+//  方案 C: Hook QLPreviewController 拦截（在 ELKMenuHook 中）
+//  方案 F: 搜索 VC 对象属性链（本文件）
 //
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
+#import <objc/runtime.h>
 
-@implementation ELKFileExporter
+// ── 缓存：方案 C 拦截到的文件路径 ──
+static NSString *g_interceptedPath = nil;
 
-+ (NSString *)findDecryptedFileInView:(UIView *)view {
-    if (!view) return nil;
-
-    NSMutableArray *all = [NSMutableArray arrayWithObject:view];
-    NSUInteger i = 0;
-    while (i < all.count && all.count < 500) {
-        UIView *v = all[i]; i++;
-        [all addObjectsFromArray:v.subviews];
++ (void)cacheInterceptedPath:(NSString *)path {
+    if (path && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        g_interceptedPath = path;
+        NSLog(@"[喵喵] 🔥 方案C拦截: %@", [path lastPathComponent]);
     }
+}
 
-    NSArray *keys = @[@"url", @"fileURL", @"filePath", @"localPath",
-                      @"previewItemURL", @"previewLocalPath"];
++ (NSString *)cachedPath {
+    if (g_interceptedPath && [[NSFileManager defaultManager] fileExistsAtPath:g_interceptedPath]) {
+        return g_interceptedPath;
+    }
+    g_interceptedPath = nil;
+    return nil;
+}
 
-    for (UIView *v in all) {
-        for (NSString *key in keys) {
-            @try {
-                id val = [v valueForKey:key];
-                NSURL *fileURL = nil;
-                if ([val isKindOfClass:[NSURL class]]) {
-                    fileURL = val;
-                } else if ([val isKindOfClass:[NSString class]]) {
-                    NSString *s = val;
-                    if ([s hasPrefix:@"file://"]) fileURL = [NSURL URLWithString:s];
-                    else if ([s hasPrefix:@"/"]) fileURL = [NSURL fileURLWithPath:s];
+// ============================================================
+//  方案 F: KVC 递归搜索 VC 对象属性（不搜索 View！）
+//  只走 VC → message → media → file → path 这条链
+// ============================================================
+
++ (NSString *)searchVCForFile:(UIViewController *)vc {
+    if (!vc) return nil;
+
+    // 先查缓存（方案 C 的拦截结果）
+    NSString *cached = [self cachedPath];
+    if (cached) return cached;
+
+    // KVC 搜索 VC 自身属性
+    NSString *found = [self searchObject:vc depth:0];
+    if (found) return found;
+
+    return nil;
+}
+
++ (NSString *)searchObject:(id)obj depth:(int)depth {
+    if (!obj || depth > 4) return nil;
+
+    NSString *bestNonTemp = nil;
+    unsigned int count = 0;
+    objc_property_t *props = class_copyPropertyList([obj class], &count);
+
+    for (unsigned int i = 0; i < count && i < 100; i++) {
+        const char *pName = property_getName(props[i]);
+        @try {
+            id val = [obj valueForKey:[NSString stringWithUTF8String:pName]];
+
+            // ── 找到了 NSString ──
+            if ([val isKindOfClass:[NSString class]] && [(NSString *)val length] > 5) {
+                NSString *s = val;
+                if ([s hasPrefix:@"file://"]) s = [[NSURL URLWithString:s] path];
+
+                if ([s hasPrefix:@"/"] && [[NSFileManager defaultManager] fileExistsAtPath:s]) {
+                    unsigned long long sz = [[[NSFileManager defaultManager]
+                        attributesOfItemAtPath:s error:nil] fileSize];
+                    if (sz > 100) {
+                        // 🔥 只要文件真实存在就接受
+                        if ([s containsString:@"/tmp/"] || [s containsString:@"/Caches/"] ||
+                            [s containsString:@"/Temp/"]) {
+                            NSLog(@"[喵喵] 🔥 方案F VC属性: %s = %@ (%llu bytes)", pName, [s lastPathComponent], sz);
+                            free(props);
+                            return s;
+                        }
+                        if (!bestNonTemp) bestNonTemp = s;
+                    }
                 }
-                if (fileURL && [fileURL isFileURL]) {
-                    NSString *p = [fileURL path];
+                continue;
+            }
+
+            // ── 找到了 NSURL ──
+            if ([val isKindOfClass:[NSURL class]]) {
+                NSURL *url = val;
+                if ([url isFileURL]) {
+                    NSString *p = [url path];
                     if ([p hasPrefix:@"/"] && [[NSFileManager defaultManager] fileExistsAtPath:p]) {
                         unsigned long long sz = [[[NSFileManager defaultManager]
                             attributesOfItemAtPath:p error:nil] fileSize];
                         if (sz > 100) {
-                            NSLog(@"[喵喵] 🔥 解密文件: %@ (%llu bytes)", [p lastPathComponent], sz);
-                            return p;
+                            if ([p containsString:@"/tmp/"] || [p containsString:@"/Caches/"] ||
+                                [p containsString:@"/Temp/"]) {
+                                NSLog(@"[喵喵] 🔥 方案F VC属性: %s = NSURL:%@ (%llu bytes)", pName, [p lastPathComponent], sz);
+                                free(props);
+                                return p;
+                            }
+                            if (!bestNonTemp) bestNonTemp = p;
                         }
                     }
                 }
-            } @catch (...) {}
-        }
+                continue;
+            }
+
+            // ── 找到了子对象 → 递归深入 ──
+            if (val && depth < 3 &&
+                ![val isKindOfClass:[NSNumber class]] &&
+                ![val isKindOfClass:[NSString class]] &&
+                ![val isKindOfClass:[NSURL class]] &&
+                ![val isKindOfClass:[UIView class]] &&
+                ![val isKindOfClass:[UIViewController class]] &&
+                ![val isKindOfClass:NSClassFromString(@"CALayer")] &&
+                ![val isEqual:obj]) {
+
+                NSString *found = [self searchObject:val depth:depth + 1];
+                if (found) { free(props); return found; }
+            }
+        } @catch (...) {}
     }
-    return nil;
+    free(props);
+    return bestNonTemp;
 }
 
-+ (void)exportFileFromMessage:(id)message {
-    // 保留空实现
-}
+// ============================================================
+//  导出 & 提示
+// ============================================================
 
 + (void)shareFileAtPath:(NSString *)filePath {
     NSURL *url = [NSURL fileURLWithPath:filePath];
@@ -83,35 +155,6 @@
         [a addAction:[UIAlertAction actionWithTitle:@"确定"
                                               style:UIAlertActionStyleDefault handler:nil]];
         [vc presentViewController:a animated:YES completion:nil];
-    });
-}
-
-// ── 诊断分享 ──
-+ (void)showDebugShareAlertWithPath:(NSString *)filePath dump:(NSString *)dump {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertController *a = [UIAlertController
-            alertControllerWithTitle:@"🔍 诊断模式"
-            message:@"未找到解密文件。\n\n已生成诊断报告，可通过以下方式发送给我：\n\n① 点下方「分享报告」→ 存储到文件\n② 把保存的文件内容发给我"
-            preferredStyle:UIAlertControllerStyleAlert];
-
-        [a addAction:[UIAlertAction actionWithTitle:@"分享报告" style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
-            NSURL *url = [NSURL fileURLWithPath:filePath];
-            UIActivityViewController *share = [[UIActivityViewController alloc]
-                initWithActivityItems:@[url] applicationActivities:nil];
-            if (share.popoverPresentationController) {
-                UIViewController *top = [ELKRuntimeHelper topViewController];
-                share.popoverPresentationController.sourceView = top.view;
-                share.popoverPresentationController.sourceRect = (CGRect){{top.view.bounds.size.width/2, top.view.bounds.size.height/2}, {0,0}};
-                share.popoverPresentationController.permittedArrowDirections = 0;
-            }
-            UIViewController *vc = [ELKRuntimeHelper topViewController];
-            if (vc) [vc presentViewController:share animated:YES completion:nil];
-        }]];
-
-        [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-
-        UIViewController *vc = [ELKRuntimeHelper topViewController];
-        if (vc) [vc presentViewController:a animated:YES completion:nil];
     });
 }
 

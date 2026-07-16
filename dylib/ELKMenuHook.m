@@ -1,16 +1,36 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - 喵喵插件（诊断版）
+//  ELKFileSaver - 喵喵插件（C+F组合方案 v7）
+//
+//  方案 C: Hook QLPreviewController.initWithPreviewItems: 拦截文件 URL
+//  方案 F: KVC 搜索 VC 对象属性链（在 ELKFileExporter 中）
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
 #import <objc/runtime.h>
 
+// ── 前向声明 ──
 @interface ELKMenuHook (Private)
 + (void)addExportButton:(UIViewController *)vc;
++ (void)interceptPreviewItems:(NSArray *)items;
 @end
 
-// ── Hook：UINavigationController.pushViewController: ──
+// ============================================================
+//  方案 C: Hook QLPreviewController 拦截预览文件
+// ============================================================
+static id (*orig_QL_initWithItems)(id, SEL, NSArray *);
+
+static id hook_QL_initWithItems(id self, SEL _cmd, NSArray *items) {
+    // 拦截预览的文件列表
+    if (items.count > 0) {
+        [ELKMenuHook interceptPreviewItems:items];
+    }
+    return orig_QL_initWithItems(self, _cmd, items);
+}
+
+// ============================================================
+//  Hook: UINavigationController.pushViewController:
+// ============================================================
 static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
 
 static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) {
@@ -29,10 +49,18 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
                                             [cn containsString:@"Media"])) isPreview = YES;
         else if ([cn containsString:@"DocumentInteraction"]) isPreview = YES;
         if (!isPreview) return;
+
         NSLog(@"[喵喵] 🎯 预览页: %@", cn);
+
+        // 等页面渲染完：加按钮 + 搜索 VC 属性（方案 F）
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [ELKMenuHook addExportButton:vc];
+            // 方案 F：立即搜索 VC 属性链缓存文件路径
+            NSString *path = [ELKFileExporter searchVCForFile:vc];
+            if (path) {
+                [ELKFileExporter cacheInterceptedPath:path];
+            }
         });
     } @catch (...) {}
 }
@@ -42,17 +70,88 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install");
-        Method m = class_getInstanceMethod([UINavigationController class],
-                                           @selector(pushViewController:animated:));
-        if (m) {
-            orig_pushVC = (void(*)(id, SEL, UIViewController *, BOOL))method_getImplementation(m);
-            method_setImplementation(m, (IMP)hook_pushVC);
-            NSLog(@"[喵喵] ✅ 已安装");
+        NSLog(@"[喵喵] 🚀 install v7 (C+F)");
+
+        // Hook 1: pushViewController
+        Method m1 = class_getInstanceMethod([UINavigationController class],
+                                            @selector(pushViewController:animated:));
+        if (m1) {
+            orig_pushVC = (void(*)(id, SEL, UIViewController *, BOOL))method_getImplementation(m1);
+            method_setImplementation(m1, (IMP)hook_pushVC);
+            NSLog(@"[喵喵] ✅ pushVC Hook 完成");
         }
-    } @catch (NSException *e) {}
+
+        // Hook 2: QLPreviewController.initWithPreviewItems: (方案 C)
+        Class ql = NSClassFromString(@"QLPreviewController");
+        if (ql) {
+            SEL sel = NSSelectorFromString(@"initWithPreviewItems:");
+            Method m2 = class_getInstanceMethod(ql, sel);
+            if (m2) {
+                orig_QL_initWithItems = (id(*)(id, SEL, NSArray *))method_getImplementation(m2);
+                method_setImplementation(m2, (IMP)hook_QL_initWithItems);
+                NSLog(@"[喵喵] ✅ QLPreviewItem Hook 完成（方案C）");
+            } else {
+                NSLog(@"[喵喵] ⚠️ QLPreviewController 存在但无 initWithPreviewItems: 方法");
+            }
+        } else {
+            NSLog(@"[喵喵] ⚠️ QLPreviewController 类不存在（eLink 用自建预览器）");
+        }
+
+        NSLog(@"[喵喵] 🏁 安装完成");
+    } @catch (NSException *e) {
+        NSLog(@"[喵喵] ❌ install: %@", e);
+    }
 }
 
+// ── 方案 C: 拦截预览文件列表 ──
++ (void)interceptPreviewItems:(NSArray *)items {
+    for (id item in items) {
+        @try {
+            // QLPreviewItem 协议：previewItemURL
+            if ([item respondsToSelector:@selector(previewItemURL)]) {
+                NSURL *url = [item performSelector:@selector(previewItemURL)];
+                if (url && [url isFileURL]) {
+                    NSString *p = [url path];
+                    if (p && [[NSFileManager defaultManager] fileExistsAtPath:p]) {
+                        unsigned long long sz = [[[NSFileManager defaultManager]
+                            attributesOfItemAtPath:p error:nil] fileSize];
+                        if (sz > 100) {
+                            NSLog(@"[喵喵] 🔥 方案C: QLPreviewItem URL = %@ (%llu bytes)", [p lastPathComponent], sz);
+                            [ELKFileExporter cacheInterceptedPath:p];
+                        }
+                    }
+                }
+            }
+
+            // 也查 KVC（有些实现把 URL 藏在别的地方）
+            for (NSString *key in @[@"previewItemURL", @"url", @"fileURL", @"filePath"]) {
+                @try {
+                    id val = [item valueForKey:key];
+                    NSURL *fileURL = nil;
+                    if ([val isKindOfClass:[NSURL class]]) fileURL = val;
+                    else if ([val isKindOfClass:[NSString class]]) {
+                        NSString *s = val;
+                        if ([s hasPrefix:@"file://"]) fileURL = [NSURL URLWithString:s];
+                        else if ([s hasPrefix:@"/"]) fileURL = [NSURL fileURLWithPath:s];
+                    }
+                    if (fileURL && [fileURL isFileURL]) {
+                        NSString *p = [fileURL path];
+                        if (p && [[NSFileManager defaultManager] fileExistsAtPath:p]) {
+                            unsigned long long sz = [[[NSFileManager defaultManager]
+                                attributesOfItemAtPath:p error:nil] fileSize];
+                            if (sz > 100) {
+                                NSLog(@"[喵喵] 🔥 方案C: KVC(%@) = %@", key, [p lastPathComponent]);
+                                [ELKFileExporter cacheInterceptedPath:p];
+                            }
+                        }
+                    }
+                } @catch (...) {}
+            }
+        } @catch (...) {}
+    }
+}
+
+// ── 预览页加导出按钮 ──
 + (void)addExportButton:(UIViewController *)vc {
     if (!vc || !vc.navigationItem) return;
     for (UIBarButtonItem *item in vc.navigationItem.rightBarButtonItems) {
@@ -67,232 +166,42 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
     NSLog(@"[喵喵] ✅ 按钮已添加");
 }
 
+// ── 导出按钮点击 ──
 + (void)handleExport:(UIBarButtonItem *)sender {
-    // 先尝试导出
-    UIViewController *vc = [self topPreviewVC];
-    if (vc) {
-        NSString *path = [ELKFileExporter findDecryptedFileInView:vc.view];
-        if (path) {
-            [ELKFileExporter shareFileAtPath:path];
-            return;
-        }
+    // 优先：方案 C 拦截缓存
+    NSString *path = [ELKFileExporter cachedPath];
+    if (path) {
+        NSLog(@"[喵喵] 📤 使用方案C路径");
+        [ELKFileExporter shareFileAtPath:path];
+        return;
     }
 
-    // 没找到 → dump 诊断信息到文件 → 让用户分享给我
-    NSString *dump = [self dumpAllInfo];
-    NSString *dumpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"meow_debug.txt"];
-    [dump writeToFile:dumpPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-
-    NSLog(@"[喵喵] 📝 诊断文件: %@", dumpPath);
-    NSLog(@"[喵喵] === 诊断信息 ===\n%@\n=== 结束 ===", dump);
-
-    // 弹出分享 → 用户可以发送给我
-    [ELKFileExporter showDebugShareAlertWithPath:dumpPath dump:dump];
-}
-
-+ (UIViewController *)topPreviewVC {
+    // 兜底：方案 F 搜索当前 VC
+    UIViewController *vc = nil;
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         UIViewController *r = w.rootViewController;
         while (r.presentedViewController) r = r.presentedViewController;
         if (r) {
             if ([r isKindOfClass:[UINavigationController class]]) {
-                return [(UINavigationController *)r topViewController];
-            }
-            return r;
-        }
-    }
-    return nil;
-}
-
-+ (NSString *)dumpAllInfo {
-    NSMutableString *s = [NSMutableString string];
-    NSDateFormatter *f = [[NSDateFormatter alloc] init];
-    f.dateFormat = @"yyyy-MM-dd HH:mm:ss";
-    [s appendFormat:@"=== 喵喵插件诊断报告 %@ ===\n\n", [f stringFromDate:[NSDate date]]];
-
-    // ── 1. 所有 Window → Root VC → 导航栈 ──
-    [s appendString:@"【Window / VC 层级】\n"];
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        [s appendFormat:@"  Window: %@ hidden=%d size=%.0fx%.0f\n",
-         NSStringFromClass([w class]), w.hidden, w.bounds.size.width, w.bounds.size.height];
-
-        UIViewController *r = w.rootViewController;
-        int depth = 0;
-        while (r && depth < 20) {
-            [s appendFormat:@"    [%d] %@\n", depth, NSStringFromClass([r class])];
-            if ([r isKindOfClass:[UINavigationController class]]) {
-                for (UIViewController *child in [(UINavigationController *)r viewControllers]) {
-                    [s appendFormat:@"      nav-stack: %@\n", NSStringFromClass([child class])];
-                    if (child.isViewLoaded) {
-                        [self dumpView:child.view to:s prefix:@"        " maxDepth:3];
-                    }
-                }
-                // presented on top of nav
-                if (r.presentedViewController) {
-                    r = r.presentedViewController;
-                    depth++;
-                    continue;
-                }
-                break;
-            }
-            if (r.presentedViewController) {
-                r = r.presentedViewController;
-                depth++;
+                vc = [(UINavigationController *)r topViewController];
             } else {
-                break;
+                vc = r;
             }
+            break;
         }
     }
-    [s appendString:@"\n"];
 
-    // ── 2. 预览页 VC 属性 ──
-    UIViewController *pvc = [self topPreviewVC];
-    if (pvc) {
-        [s appendFormat:@"【预览页 VC: %@】\n", NSStringFromClass([pvc class])];
-
-        if (pvc.navigationItem) {
-            [s appendFormat:@"  title=%@, prompt=%@\n", pvc.navigationItem.title, pvc.navigationItem.prompt];
-            [s appendFormat:@"  rightItems=%lu\n", (unsigned long)pvc.navigationItem.rightBarButtonItems.count];
-        }
-        if (pvc.isViewLoaded) {
-            [s appendFormat:@"  view=%@ size=%.0fx%.0f subviews=%lu\n",
-             NSStringFromClass([pvc.view class]),
-             pvc.view.bounds.size.width, pvc.view.bounds.size.height,
-             (unsigned long)pvc.view.subviews.count];
-        }
-        [self dumpVCProperties:pvc to:s];
-        [s appendString:@"\n"];
+    if (vc) {
+        path = [ELKFileExporter searchVCForFile:vc];
     }
 
-    // ── 3. View 层级 + 含 NSString/NSURL 属性的视图 ──
-    if (pvc && pvc.isViewLoaded) {
-        [s appendString:@"【View 层级（含路径/URL属性）】\n"];
-        [self dumpView:pvc.view to:s prefix:@"" maxDepth:10];
-        [s appendString:@"\n"];
+    if (path) {
+        NSLog(@"[喵喵] 📤 使用方案F路径");
+        [ELKFileExporter shareFileAtPath:path];
+    } else {
+        [ELKFileExporter showAlertWithTitle:@"未找到文件"
+                                     message:@"可能原因：\n\n1. eLink 用了自建预览器\n   (非 QLPreviewController)\n\n2. 文件路径不在 VC 属性中\n\n请尝试：关闭预览，重新点开文件后再试。"];
     }
-
-    // ── 4. 全局搜索 /tmp/ 目录下 eLink 相关文件 ──
-    [s appendString:@"【全局 /tmp/ 搜索】\n"];
-    [self dumpTmpFilesTo:s];
-    [s appendString:@"\n"];
-
-    [s appendString:@"=== 报告结束 ==="];
-    return s;
-}
-
-// ── 递归 dump view 层级 ──
-+ (void)dumpView:(UIView *)v to:(NSMutableString *)s prefix:(NSString *)pfx maxDepth:(int)depth {
-    if (!v || depth <= 0 || s.length > 800000) return;
-    [s appendFormat:@"%@%@ tag=%ld frame=(%.0f,%.0f,%.0f,%.0f)",
-     pfx, NSStringFromClass([v class]), (long)v.tag,
-     v.frame.origin.x, v.frame.origin.y, v.frame.size.width, v.frame.size.height];
-
-    // 检查 NSString/NSURL 属性
-    unsigned int count = 0;
-    objc_property_t *props = class_copyPropertyList([v class], &count);
-    NSMutableString *found = [NSMutableString string];
-    for (unsigned int i = 0; i < count && i < 200; i++) {
-        @try {
-            NSString *pName = [NSString stringWithUTF8String:property_getName(props[i])];
-            id val = [v valueForKey:pName];
-
-            if ([val isKindOfClass:[NSString class]] && [(NSString *)val length] > 0) {
-                NSString *str = val;
-                if (str.length > 120) str = [[str substringToIndex:120] stringByAppendingString:@"..."];
-                [found appendFormat:@" | \"%@\"=\"%@\"", pName, str];
-            } else if ([val isKindOfClass:[NSURL class]]) {
-                [found appendFormat:@" | \"%@\"=NSURL:%@", pName, [val absoluteString]];
-            } else if (val && ![val isKindOfClass:[NSNumber class]] &&
-                       ![val isKindOfClass:[NSString class]] && ![val isKindOfClass:[NSURL class]] &&
-                       ![val isKindOfClass:[UIView class]] && ![val isKindOfClass:NSClassFromString(@"CALayer")]) {
-                [found appendFormat:@" | \"%@\"=%@", pName, NSStringFromClass([val class])];
-            }
-        } @catch (...) {}
-    }
-    free(props);
-
-    if (found.length > 0) [s appendString:found];
-    [s appendString:@"\n"];
-
-    for (UIView *sub in v.subviews) {
-        [self dumpView:sub to:s prefix:[pfx stringByAppendingString:@"  "] maxDepth:depth - 1];
-    }
-}
-
-// ── 列出 VC 的所有属性 ──
-+ (void)dumpVCProperties:(UIViewController *)vc to:(NSMutableString *)s {
-    [s appendString:@"  【属性列表】\n"];
-    unsigned int count = 0;
-    objc_property_t *props = class_copyPropertyList([vc class], &count);
-    for (unsigned int i = 0; i < count && i < 300; i++) {
-        @try {
-            NSString *pName = [NSString stringWithUTF8String:property_getName(props[i])];
-            const char *attr = property_getAttributes(props[i]);
-            id val = [vc valueForKey:pName];
-
-            NSString *typeStr = [NSString stringWithUTF8String:attr ?: ""];
-            if ([val isKindOfClass:[NSString class]]) {
-                NSString *str = val;
-                if (str.length > 100) str = [[str substringToIndex:100] stringByAppendingString:@"..."];
-                [s appendFormat:@"    %@ (%@) = \"%@\"\n", pName, [self typeFromAttr:typeStr], str];
-            } else if ([val isKindOfClass:[NSURL class]]) {
-                [s appendFormat:@"    %@ (%@) = NSURL:%@\n", pName, [self typeFromAttr:typeStr], [val absoluteString]];
-            } else if (val && ![val isKindOfClass:[NSNumber class]] &&
-                       ![val isKindOfClass:[UIView class]] && ![val isKindOfClass:NSClassFromString(@"CALayer")]) {
-                [s appendFormat:@"    %@ (%@) = %@\n", pName, [self typeFromAttr:typeStr], NSStringFromClass([val class])];
-            }
-        } @catch (...) {}
-    }
-    free(props);
-}
-
-+ (NSString *)typeFromAttr:(NSString *)attr {
-    if ([attr containsString:@"NSString"]) return @"NSString";
-    if ([attr containsString:@"NSURL"]) return @"NSURL";
-    if ([attr containsString:@"NSData"]) return @"NSData";
-    if ([attr containsString:@"NSArray"]) return @"NSArray";
-    if ([attr containsString:@"NSDictionary"]) return @"NSDictionary";
-    if ([attr containsString:@"@\""]) {
-        NSRange r1 = [attr rangeOfString:@"@\""];
-        NSRange r2 = [attr rangeOfString:@"\"" options:0 range:NSMakeRange(r1.location+2, attr.length-r1.location-2)];
-        if (r2.location != NSNotFound) {
-            return [attr substringWithRange:NSMakeRange(r1.location+2, r2.location-r1.location-2)];
-        }
-    }
-    return @"?";
-}
-
-// ── 列出 /tmp/ 下的文件 ──
-+ (void)dumpTmpFilesTo:(NSMutableString *)s {
-    NSArray *dirs = @[@"/tmp", @"/var/tmp"];
-    for (NSString *dir in dirs) {
-        @try {
-            NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
-            [s appendFormat:@"  %@ (%lu files):\n", dir, (unsigned long)files.count];
-            for (NSString *f in files) {
-                NSString *fp = [dir stringByAppendingPathComponent:f];
-                unsigned long long sz = [[[NSFileManager defaultManager] attributesOfItemAtPath:fp error:nil] fileSize];
-                if (sz > 1000) {
-                    [s appendFormat:@"    %@ (%llu KB)\n", f, sz/1024];
-                }
-            }
-        } @catch (...) {}
-    }
-
-    // 也搜 Caches
-    @try {
-        NSString *cacheDir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-        NSArray *cacheFiles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:cacheDir error:nil];
-        [s appendFormat:@"  Caches (%lu files):\n", (unsigned long)cacheFiles.count];
-        NSArray *topCache = cacheFiles.count > 50 ? [cacheFiles subarrayWithRange:NSMakeRange(0, 50)] : cacheFiles;
-        for (NSString *f in topCache) {
-            NSString *fp = [cacheDir stringByAppendingPathComponent:f];
-            unsigned long long sz = [[[NSFileManager defaultManager] attributesOfItemAtPath:fp error:nil] fileSize];
-            if (sz > 10000) {
-                [s appendFormat:@"    %@ (%llu KB)\n", f, sz/1024];
-            }
-        }
-    } @catch (...) {}
 }
 
 @end
