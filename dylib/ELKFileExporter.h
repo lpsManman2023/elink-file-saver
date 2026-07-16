@@ -1,20 +1,17 @@
 //
 //  ELKFileExporter.h
-//  ELKFileSaver
+//  ELKFileSaver - v8 文件系统监控
 //
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
 @interface ELKFileExporter : NSObject
 
-/// 方案 C：缓存从预览器拦截到的文件路径
-+ (void)cacheInterceptedPath:(NSString *)path;
+/// 启动文件系统监控（每2秒扫描 tmp/Caches）
++ (void)startFileMonitor;
 
-/// 获取缓存的路径
-+ (NSString *)cachedPath;
-
-/// 方案 F：KVC 搜索 VC 对象属性链找文件
-+ (NSString *)searchVCForFile:(UIViewController *)vc;
+/// 查找预览解密文件（监控缓存 + 实时扫描）
++ (NSString *)findDecryptedFile;
 
 /// 弹出系统分享菜单
 + (void)shareFileAtPath:(NSString *)filePath;
