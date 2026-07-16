@@ -7,10 +7,16 @@
 #import "ELKRuntimeHelper.h"
 #import <objc/runtime.h>
 
-// ── 缓存：预览打开时立即搜到的解密文件路径 ──
-static NSString *g_cachedPath = nil;
+// ── 前向声明 ──
+@interface ELKMenuHook (Private)
++ (void)onNewVC:(UIViewController *)vc;
++ (void)addExportButton:(UIViewController *)vc;
++ (void)onExportButtonTap;
++ (BOOL)isPreviewVC:(UIViewController *)vc;
+@end
 
-// ── 防止 present hook 递归（我们自己的弹窗不能触发 hook） ──
+// ── 缓存 ──
+static NSString *g_cachedPath = nil;
 static BOOL g_inExportFlow = NO;
 
 // ============================================================
@@ -20,7 +26,6 @@ static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
 
 static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) {
     orig_pushVC(self, _cmd, vc, animated);
-
     if (g_inExportFlow) return;
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
@@ -36,15 +41,14 @@ static void (*orig_presentVC)(id, SEL, UIViewController *, BOOL, void(^)(void));
 
 static void hook_presentVC(id self, SEL _cmd, UIViewController *vc,
                            BOOL animated, void(^completion)(void)) {
-    // 🔥 我们的导出流程中的 present 不能触发 hook
-    BOOL wasExportFlow = g_inExportFlow;
-    if (!wasExportFlow) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [ELKMenuHook onNewVC:vc];
-        });
-    }
     orig_presentVC(self, _cmd, vc, animated, completion);
+
+    if (g_inExportFlow) return;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [ELKMenuHook onNewVC:vc];
+    });
 }
 
 // ============================================================
@@ -52,7 +56,7 @@ static void hook_presentVC(id self, SEL _cmd, UIViewController *vc,
 // ============================================================
 static void onExportTap(void) {
     if (g_cachedPath && [[NSFileManager defaultManager] fileExistsAtPath:g_cachedPath]) {
-        NSLog(@"[喵喵] 📤 导出缓存文件: %@", g_cachedPath);
+        NSLog(@"[喵喵] 📤 导出缓存: %@", g_cachedPath);
         g_inExportFlow = YES;
         [ELKFileExporter shareFileAtPath:g_cachedPath];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
@@ -60,7 +64,6 @@ static void onExportTap(void) {
             g_inExportFlow = NO;
         });
     } else {
-        // 兜底：重新搜索
         UIViewController *top = [ELKRuntimeHelper topViewController];
         if (top && top.view) {
             NSString *found = [ELKFileExporter findDecryptedFileInView:top.view];
@@ -112,10 +115,8 @@ static void onExportTap(void) {
 + (BOOL)isPreviewVC:(UIViewController *)vc {
     NSString *cn = NSStringFromClass([vc class]);
 
-    // Apple QuickLook
     if ([cn hasPrefix:@"QLPreview"]) return YES;
 
-    // WeWork 自定义预览页
     if ([cn hasPrefix:@"WWK"]) {
         if ([cn containsString:@"File"] || [cn containsString:@"Image"] ||
             [cn containsString:@"Video"] || [cn containsString:@"Doc"] ||
@@ -125,7 +126,6 @@ static void onExportTap(void) {
         }
     }
 
-    // UIDocumentInteractionController
     if ([cn containsString:@"DocumentInteraction"]) return YES;
 
     return NO;
@@ -137,7 +137,6 @@ static void onExportTap(void) {
 
     NSLog(@"[喵喵] 🎯 预览页: %@", NSStringFromClass([vc class]));
 
-    // 🔥 立即搜索解密文件
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (vc.view) {
@@ -145,14 +144,12 @@ static void onExportTap(void) {
             if (path) {
                 g_cachedPath = path;
             }
-            // 加按钮
             [self addExportButton:vc];
         }
     });
 }
 
 + (void)addExportButton:(UIViewController *)vc {
-    // 去重
     if (vc.navigationItem.rightBarButtonItems) {
         for (UIBarButtonItem *item in vc.navigationItem.rightBarButtonItems) {
             if ([item.title isEqualToString:@"📤导出"]) return;
