@@ -80,14 +80,15 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 }
 
 + (void)handleExport:(UIBarButtonItem *)sender {
-    // 🔥 只走文件系统查找，不碰任何 App 对象
-    NSString *path = [ELKFileExporter findDecryptedFile];
-    if (path) {
-        [ELKFileExporter shareFileAtPath:path];
-    } else {
-        [ELKFileExporter showAlertWithTitle:@"未找到解密文件"
-                                     message:@"请确认：\n\n" "① 文件已在预览中打开\n" "② 文件已下载完成\n\n" "提示：点开文件查看后，\n" "立即点右上角「📤导出」。"];
-    }
+    // 🔥 后台扫描文件，主线程展示结果
+    [ELKFileExporter findDecryptedFileAsync:^(NSString *path) {
+        if (path) {
+            [ELKFileExporter shareFileAtPath:path];
+        } else {
+            [ELKFileExporter showAlertWithTitle:@"未找到解密文件"
+                                         message:@"请确认：\n\n① 文件已在预览中打开\n② 文件已下载完成\n\n提示：点开文件查看后，\n立即点右上角「📤导出」。"];
+        }
+    }];
 }
 
 @end
