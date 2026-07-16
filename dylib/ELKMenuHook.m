@@ -1,92 +1,118 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - 喵喵插件（sendEvent 拦截方案）
+//  ELKFileSaver - 喵喵插件（单手势方案）
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
 #import <objc/runtime.h>
 
-// ── 前向声明 ──
 @interface ELKMenuHook (Private)
 + (id)msgFromView:(UIView *)v;
 + (id)msgInSubviews:(UIView *)root;
 @end
 
 // ============================================================
-//  Hook UIWindow.sendEvent: —— 拦截所有触摸事件
-// ============================================================
-static void (*orig_sendEvent)(id, SEL, UIEvent *);
+@interface ELKGestureHandler : NSObject <UIGestureRecognizerDelegate>
+@end
 
-static void hook_sendEvent(id self, SEL _cmd, UIEvent *event) {
-    // 先调用原始实现，保证 App 完全不受影响
-    orig_sendEvent(self, _cmd, event);
+@implementation ELKGestureHandler
 
-    @try {
-        NSSet *touches = [event allTouches];
-        if (touches.count != 1) return;
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gr {
+    if (gr.state != UIGestureRecognizerStateBegan) return;
 
-        UITouch *touch = [touches anyObject];
-        if (touch.phase != UITouchPhaseBegan) return;
+    UIView *rootView = gr.view;
+    CGPoint point = [gr locationInView:rootView];
+    UIView *hit = [rootView hitTest:point withEvent:nil];
+    if (!hit) return;
 
-        // 记录触摸开始时间和位置
-        CGPoint point = [touch locationInView:nil]; // window 坐标
-        NSTimeInterval ts = touch.timestamp;
-
-        // 检查触摸下面的视图是不是气泡
-        UIView *hit = [(UIWindow *)self hitTest:point withEvent:event];
-        if (!hit) return;
-
-        UIView *bubble = hit;
-        while (bubble) {
-            if ([NSStringFromClass([bubble class]) hasPrefix:@"WWKConversation"]) break;
-            bubble = bubble.superview;
-        }
-        if (!bubble) return;
-
-        // 🔥 存储这次触摸信息，等待长按确认
-        // 我们用 dispatch_after 等待 0.5 秒后检查
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            // 检查触摸是否还在进行中（即用户确实在长按）
-            // touch.phase 在闭包里不准确，但我们用另一种方式：
-            // 如果在 0.5 秒后 bubble 仍然可见，说明用户没有松手
-            if (bubble.window != nil) {
-                // 尝试提取消息
-                id message = [ELKMenuHook msgFromView:bubble] ?: [ELKMenuHook msgInSubviews:bubble];
-                if (message) {
-                    NSLog(@"[喵喵] 👆 长按气泡: %@", NSStringFromClass([bubble class]));
-                    // 再延迟 0.3 秒，等 App 自己的菜单先显示
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                                   dispatch_get_main_queue(), ^{
-                        [ELKFileExporter exportFileFromMessage:message];
-                    });
-                }
-            }
-        });
-    } @catch (NSException *e) {
-        NSLog(@"[喵喵] ⚠️ sendEvent Hook: %@", e);
+    // 找气泡
+    UIView *bubble = hit;
+    while (bubble) {
+        if ([NSStringFromClass([bubble class]) hasPrefix:@"WWKConversation"]) break;
+        bubble = bubble.superview;
     }
+    if (!bubble) return;
+
+    // 提取消息
+    id message = [ELKMenuHook msgFromView:bubble] ?: [ELKMenuHook msgInSubviews:bubble];
+    if (!message) return;
+
+    NSLog(@"[喵喵] 👆 长按: %@", NSStringFromClass([bubble class]));
+
+    // 直接导出
+    [ELKFileExporter exportFileFromMessage:message];
 }
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return YES;
+}
+
+// 不让我们的手势吃掉触摸
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr
+shouldReceiveTouch:(UITouch *)touch {
+    return YES;
+}
+
+@end
+
+static ELKGestureHandler *g_handler = nil;
 
 // ============================================================
 @implementation ELKMenuHook
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install（sendEvent 方案）");
+        NSLog(@"[喵喵] 🚀 install（单手势方案）");
 
-        Method m = class_getInstanceMethod([UIWindow class], @selector(sendEvent:));
-        if (m) {
-            orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(m);
-            method_setImplementation(m, (IMP)hook_sendEvent);
-            NSLog(@"[喵喵] ✅ sendEvent: Hook 完成");
-        }
+        g_handler = [[ELKGestureHandler alloc] init];
+
+        // 延迟等 UI 就绪
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self tryAddGesture];
+        });
 
         NSLog(@"[喵喵] 🏁 安装完成");
     } @catch (NSException *e) {
-        NSLog(@"[喵喵] ❌ install: %@", e);
+        NSLog(@"[喵喵] ❌ %@", e);
     }
+}
+
++ (void)tryAddGesture {
+    // 只在一个 window 上加
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        // 跳过系统 window
+        if (w.hidden || !w.rootViewController) continue;
+        if (CGRectIsEmpty(w.bounds) || w.bounds.size.width < 10) continue;
+        if ([NSStringFromClass([w class]) hasPrefix:@"UIText"]) continue;
+
+        // 查重
+        BOOL exists = NO;
+        for (UIGestureRecognizer *gr in w.gestureRecognizers) {
+            if ([gr.delegate isKindOfClass:[ELKGestureHandler class]]) { exists = YES; break; }
+        }
+        if (exists) return;
+
+        UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:g_handler action:@selector(handleLongPress:)];
+        lp.minimumPressDuration = 0.5;
+        lp.cancelsTouchesInView = NO;      // 不拦截触摸
+        lp.delaysTouchesBegan = NO;         // 不延迟触摸
+        lp.delaysTouchesEnded = NO;
+        lp.delegate = g_handler;
+
+        [w addGestureRecognizer:lp];
+        NSLog(@"[喵喵] ✅ 手势已添加到 %@", NSStringFromClass([w class]));
+        return; // 只加一个
+    }
+
+    // 没找到合适的窗口，2 秒后重试
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self tryAddGesture];
+    });
 }
 
 + (id)msgFromView:(UIView *)v {
@@ -94,7 +120,12 @@ static void hook_sendEvent(id self, SEL _cmd, UIEvent *event) {
     for (NSString *key in @[@"message", @"messageItem", @"messageMedia", @"bubbleData"]) {
         @try {
             id val = [v valueForKey:key];
-            if (val && [NSStringFromClass([val class]) hasPrefix:@"WWKMessage"]) return val;
+            if (val) {
+                NSString *cn = NSStringFromClass([val class]);
+                if ([cn hasPrefix:@"WWKMessage"]) return val;
+                // 也接受 media 对象
+                if ([cn hasPrefix:@"WWKMessage"] || [cn containsString:@"Media"]) return val;
+            }
         } @catch (...) {}
     }
     return nil;
