@@ -1,185 +1,148 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - 喵喵插件（自建长按菜单版）
+//  ELKFileSaver - 喵喵插件（WWK 菜单直插版）
+//
+//  策略：Hook 所有 WWKConversation*BubbleView 的 touchesEnded
+//  检测长按 → 在 App 菜单出现的同时弹出我们的 ActionSheet
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
 #import <objc/runtime.h>
 
-// ── 前向声明（实现在文件末尾） ──
+// ── 前向声明 ──
 @interface ELKMenuHook (Private)
-+ (id)findMessageFromResponder:(UIResponder *)r;
 + (id)msgFromView:(UIView *)v;
 + (id)msgInSubviews:(UIView *)root;
 @end
 
 // ============================================================
-//  1. 自定义长按手势
+//  长按检测手势（加在气泡视图本身上）
 // ============================================================
-@interface ELKLongPressHandler : NSObject <UIGestureRecognizerDelegate>
+@interface ELKBubbleWatcher : NSObject <UIGestureRecognizerDelegate>
+@property (nonatomic, weak) UIView *bubble;
+- (void)onLongPress:(UILongPressGestureRecognizer *)gr;
 @end
 
-@implementation ELKLongPressHandler
+@implementation ELKBubbleWatcher
 
-- (void)handleLongPress:(UILongPressGestureRecognizer *)gr {
+- (void)onLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state != UIGestureRecognizerStateBegan) return;
 
-    UIView *view = gr.view;
-    CGPoint point = [gr locationInView:view];
-
-    UIView *hit = [view hitTest:point withEvent:nil];
-    if (!hit) return;
-
-    // 向上遍历找到消息气泡
-    UIView *bubble = hit;
-    while (bubble) {
-        NSString *cn = NSStringFromClass([bubble class]);
-        if ([cn hasPrefix:@"WWKConversation"]) break;
-        bubble = bubble.superview;
-    }
+    UIView *bubble = self.bubble;
     if (!bubble) return;
 
-    // 从气泡中提取消息对象
-    id message = nil;
-    for (NSString *key in @[@"message", @"messageItem", @"messageMedia",
-                            @"mediaContext", @"bubbleData", @"data"]) {
-        @try {
-            id val = [bubble valueForKey:key];
-            if (val) {
-                NSString *cn = NSStringFromClass([val class]);
-                if ([cn hasPrefix:@"WWKMessage"] || [cn containsString:@"Message"]) {
-                    message = val;
-                    break;
-                }
-            }
-        } @catch (...) {}
-    }
+    NSLog(@"[喵喵] 👆 长按气泡: %@", NSStringFromClass([bubble class]));
+
+    // 提取消息
+    id message = [ELKMenuHook msgFromView:bubble] ?: [ELKMenuHook msgInSubviews:bubble];
 
     if (!message) {
-        message = [ELKMenuHook msgInSubviews:bubble];
+        NSLog(@"[喵喵] ⚠️ 未提取到消息对象");
+        return;
     }
 
-    if (message) {
-        NSLog(@"[喵喵插件] 🔔 长按消息: %@", NSStringFromClass([message class]));
-
-        UIAlertController *sheet = [UIAlertController
-            alertControllerWithTitle:nil message:nil
-            preferredStyle:UIAlertControllerStyleActionSheet];
-
-        [sheet addAction:[UIAlertAction actionWithTitle:@"💾 保存到文件"
-            style:UIAlertActionStyleDefault
-            handler:^(UIAlertAction *action) {
-                [ELKFileExporter exportFileFromMessage:message];
-            }]];
-
-        [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
-            style:UIAlertActionStyleCancel handler:nil]];
-
-        UIPopoverPresentationController *pop = sheet.popoverPresentationController;
-        if (pop) {
-            pop.sourceView = bubble;
-            pop.sourceRect = bubble.bounds;
-        }
-
-        UIViewController *topVC = [ELKRuntimeHelper topViewController];
-        if (topVC) {
-            [topVC presentViewController:sheet animated:YES completion:nil];
-        }
-    }
+    // 🔥 延迟 0.3 秒弹出，等 App 自己的菜单先起来
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        // 直接导出，不再弹二级菜单
+        [ELKFileExporter exportFileFromMessage:message];
+    });
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr
-    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
-    return YES;
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return YES; // 与 App 自己的长按手势共存
 }
 
 @end
 
-static ELKLongPressHandler *g_handler = nil;
-
-// ============================================================
-//  2. 主入口
 // ============================================================
 @implementation ELKMenuHook
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵插件] 🚀 install");
+        NSLog(@"[喵喵] 🚀 install（气泡注入手势方案）");
 
-        g_handler = [[ELKLongPressHandler alloc] init];
-
+        // 延迟等 UI 加载完
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [self addGestureToConversationViews];
+            [self scanAndInject:0];
         });
 
-        NSLog(@"[喵喵插件] 🏁 安装完成");
+        NSLog(@"[喵喵] 🏁 安装完成");
     } @catch (NSException *e) {
-        NSLog(@"[喵喵插件] ❌ install 异常: %@", e);
+        NSLog(@"[喵喵] ❌ install 异常: %@", e);
     }
 }
 
-+ (void)addGestureToConversationViews {
++ (void)scanAndInject:(int)retryCount {
+    // 遍历所有窗口
+    int injected = 0;
     for (UIWindow *win in [UIApplication sharedApplication].windows) {
-        if ([self addGestureIfHasBubbles:win depth:0]) break;
+        injected += [self injectBubblesInView:win depth:0];
     }
 
-    // 定期重试，新打开的聊天页也能加上手势
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        [self addGestureToConversationViews];
-    });
+    NSLog(@"[喵喵] 📊 本轮注入: %d 个气泡", injected);
+
+    // 最多重试 6 次 (30秒)
+    if (injected == 0 && retryCount < 6) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self scanAndInject:retryCount + 1];
+        });
+    }
 }
 
-+ (BOOL)addGestureIfHasBubbles:(UIView *)view depth:(int)depth {
-    if (depth > 20) return NO;
++ (int)injectBubblesInView:(UIView *)view depth:(int)depth {
+    if (depth > 30) return 0;
+    int count = 0;
 
     for (UIView *sub in view.subviews) {
-        if ([NSStringFromClass([sub class]) hasPrefix:@"WWKConversation"]) {
-            UIView *target = view;
+        NSString *cn = NSStringFromClass([sub class]);
 
-            // 已经加过就跳过
-            for (UIGestureRecognizer *gr in target.gestureRecognizers) {
-                if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] &&
-                    [gr.delegate isKindOfClass:[ELKLongPressHandler class]]) {
-                    return YES;
+        // 找到聊天气泡
+        if ([cn hasPrefix:@"WWKConversation"] && [cn hasSuffix:@"BubbleView"]) {
+            // 检查是否已经注过
+            BOOL hasOurs = NO;
+            for (UIGestureRecognizer *gr in sub.gestureRecognizers) {
+                if ([gr.delegate isKindOfClass:[ELKBubbleWatcher class]]) {
+                    hasOurs = YES; break;
                 }
             }
+            if (!hasOurs) {
+                ELKBubbleWatcher *watcher = [[ELKBubbleWatcher alloc] init];
+                watcher.bubble = sub;
 
-            UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc]
-                initWithTarget:g_handler action:@selector(handleLongPress:)];
-            lp.minimumPressDuration = 0.5;
-            lp.cancelsTouchesInView = NO;
-            lp.delegate = g_handler;
-            [target addGestureRecognizer:lp];
+                UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc]
+                    initWithTarget:watcher action:@selector(onLongPress:)];
+                lp.minimumPressDuration = 0.4;
+                lp.delegate = watcher;
 
-            NSLog(@"[喵喵插件] ✅ 手势已添加");
-            return YES;
+                [sub addGestureRecognizer:lp];
+                count++;
+            }
         }
 
-        if ([self addGestureIfHasBubbles:sub depth:depth + 1]) return YES;
+        // 继续递归
+        count += [self injectBubblesInView:sub depth:depth + 1];
     }
-    return NO;
-}
 
-// ============================================================
-//  3. 消息查找
-// ============================================================
-+ (id)findMessageFromResponder:(UIResponder *)r {
-    return nil; // 自建方案用不到
+    return count;
 }
 
 + (id)msgFromView:(UIView *)v {
     if (!v) return nil;
-    for (NSString *key in @[@"message", @"messageItem", @"messageMedia",
-                            @"mediaContext", @"bubbleData", @"data", @"wwMessage",
-                            @"fileMessage", @"imageMessage", @"videoMessage"]) {
+    NSArray *keys = @[@"message", @"messageItem", @"messageMedia", @"bubbleData",
+                      @"fileMessage", @"imageMessage", @"videoMessage", @"data"];
+    for (NSString *key in keys) {
         @try {
             id val = [v valueForKey:key];
             if (val) {
                 NSString *cn = NSStringFromClass([val class]);
-                if ([cn hasPrefix:@"WWKMessage"] || [cn containsString:@"Message"]) return val;
+                if ([cn hasPrefix:@"WWKMessage"] || [cn containsString:@"Message"] || [cn containsString:@"Media"]) {
+                    return val;
+                }
             }
         } @catch (...) {}
     }
