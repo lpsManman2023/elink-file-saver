@@ -5,32 +5,23 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-14
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
-      # ========== 新增：从 Releases 下载原始IPA ==========
-      - name: 从 Releases 下载原始 IPA
+      - name: 从最新 Release 下载 IPA
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 创建ipa存放目录
-          mkdir -p ipa
-          # 获取最新Release信息
-          LATEST_RELEASE=$(gh release view --json assets,tagName -q '.assets[] | select(.name | endswith(".ipa")) | .browser_download_url' | head -1)
-          echo "下载地址: $LATEST_RELEASE"
-          # 下载到 ipa/ 文件夹
-          curl -L -o ipa/origin.ipa "$LATEST_RELEASE"
-          echo "IPA下载完成"
-      # ==================================================
+          echo "获取最新 Release..."
 
-      - name: 检查 IPA 文件
-        run: |
-          echo "查找 IPA 文件..."
-          find ipa/ -name "*.ipa" -type f 2>/dev/null || echo "未找到 IPA"
-          ls -lh ipa/ 2>/dev/null || true
+          # 下载最新 Release 的所有 .ipa 文件
+          gh release download --repo ${{ github.repository }} --pattern "*.ipa" --dir ipa/
+
+          echo "下载完成："
+          ls -lh ipa/
 
       - name: 编译 + 注入 + 打包
         run: |
@@ -48,6 +39,6 @@ jobs:
         run: |
           echo ""
           echo "══════════════════════════════════════════"
-          echo "  下载 eLink_FileSaver.zip (在页面底部)"
-          echo "  解压后传给手机 → TrollStore 安装"
+          echo "下载 eLink_FileSaver.zip (在页面底部)"
+          echo "解压后传给手机 → TrollStore 安装"
           echo "══════════════════════════════════════════"
