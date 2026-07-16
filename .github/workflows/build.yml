@@ -2,7 +2,6 @@ name: Build ELKFileSaver IPA
 
 on:
   workflow_dispatch:
-    # 手动触发：在 GitHub 网页上点 Actions → Build → Run workflow
 
 jobs:
   build:
@@ -11,6 +10,21 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
+
+      # ========== 新增：从 Releases 下载原始IPA ==========
+      - name: 从 Releases 下载原始 IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 创建ipa存放目录
+          mkdir -p ipa
+          # 获取最新Release信息
+          LATEST_RELEASE=$(gh release view --json assets,tagName -q '.assets[] | select(.name | endswith(".ipa")) | .browser_download_url' | head -1)
+          echo "下载地址: $LATEST_RELEASE"
+          # 下载到 ipa/ 文件夹
+          curl -L -o ipa/origin.ipa "$LATEST_RELEASE"
+          echo "IPA下载完成"
+      # ==================================================
 
       - name: 检查 IPA 文件
         run: |
