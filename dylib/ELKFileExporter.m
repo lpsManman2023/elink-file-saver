@@ -1,84 +1,65 @@
 //
 //  ELKFileExporter.m
-//  ELKFileSaver - 喵喵插件
+//  ELKFileSaver - 喵喵插件（极简稳定版）
 //
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
-#import <objc/runtime.h>
 
 @implementation ELKFileExporter
 
 + (NSString *)findDecryptedFileInView:(UIView *)view {
     if (!view) return nil;
 
-    NSMutableArray *allViews = [NSMutableArray arrayWithObject:view];
-    NSUInteger idx = 0;
-    while (idx < allViews.count) {
-        UIView *v = allViews[idx];
-        idx++;
+    // 收集视图层级中所有视图
+    NSMutableArray *all = [NSMutableArray arrayWithObject:view];
+    NSUInteger i = 0;
+    while (i < all.count && all.count < 500) {
+        UIView *v = all[i]; i++;
+        [all addObjectsFromArray:v.subviews];
+    }
 
-        unsigned int count = 0;
-        objc_property_t *props = class_copyPropertyList([v class], &count);
-        for (unsigned int i = 0; i < count && i < 100; i++) {
+    // 在每个视图上查已知 key
+    NSArray *keys = @[@"url", @"fileURL", @"filePath", @"localPath",
+                      @"previewItemURL", @"previewLocalPath"];
+
+    for (UIView *v in all) {
+        for (NSString *key in keys) {
             @try {
-                id val = [v valueForKey:[NSString stringWithUTF8String:property_getName(props[i])]];
-                if ([val isKindOfClass:[NSString class]]) {
+                id val = [v valueForKey:key];
+                NSURL *fileURL = nil;
+
+                if ([val isKindOfClass:[NSURL class]]) {
+                    fileURL = val;
+                } else if ([val isKindOfClass:[NSString class]]) {
                     NSString *s = val;
-                    if ([s hasPrefix:@"file://"]) s = [[NSURL URLWithString:s] path];
-                    if ([s hasPrefix:@"/"] && s.length > 5) {
-                        if (([s containsString:@"/tmp/"] || [s containsString:@"/Caches/"] ||
-                             [s containsString:@"/Temp/"]) &&
-                            [[NSFileManager defaultManager] fileExistsAtPath:s]) {
+                    if ([s hasPrefix:@"file://"]) fileURL = [NSURL URLWithString:s];
+                    else if ([s hasPrefix:@"/"]) fileURL = [NSURL fileURLWithPath:s];
+                }
+
+                if (fileURL && [fileURL isFileURL]) {
+                    NSString *p = [fileURL path];
+                    if ([p hasPrefix:@"/"] && ( [p containsString:@"/tmp/"] ||
+                                                [p containsString:@"/Caches/"] ||
+                                                [p containsString:@"/Temp/"])) {
+                        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) {
                             unsigned long long sz = [[[NSFileManager defaultManager]
-                                attributesOfItemAtPath:s error:nil] fileSize];
+                                attributesOfItemAtPath:p error:nil] fileSize];
                             if (sz > 100) {
-                                NSLog(@"[喵喵] 🔥 找到解密文件: %@ (%llu bytes)", [s lastPathComponent], sz);
-                                free(props);
-                                return s;
+                                NSLog(@"[喵喵] 🔥 解密文件: %@ (%llu bytes)", [p lastPathComponent], sz);
+                                return p;
                             }
                         }
                     }
                 }
             } @catch (...) {}
         }
-        free(props);
-
-        for (UIView *sub in v.subviews) {
-            [allViews addObject:sub];
-        }
     }
+
     return nil;
 }
 
 + (void)exportFileFromMessage:(id)message {
-    if (!message) return;
-
-    NSString *path = nil;
-    @try {
-        for (NSString *key in @[@"localPath", @"fileLocalPath", @"filePath",
-                                @"previewLocalPath", @"previewPath", @"cachePath",
-                                @"downloadPath", @"url"]) {
-            @try {
-                id val = [message valueForKey:key];
-                if ([val isKindOfClass:[NSString class]] && [(NSString *)val length] > 5) {
-                    NSString *s = val;
-                    if ([s hasPrefix:@"file://"]) s = [[NSURL URLWithString:s] path];
-                    if ([s hasPrefix:@"/"] && [[NSFileManager defaultManager] fileExistsAtPath:s]) {
-                        unsigned long long sz = [[[NSFileManager defaultManager]
-                            attributesOfItemAtPath:s error:nil] fileSize];
-                        if (sz > 100) { path = s; break; }
-                    }
-                }
-            } @catch (...) {}
-        }
-    } @catch (...) {}
-
-    if (path) {
-        [self shareFileAtPath:path];
-    } else {
-        [self showAlertWithTitle:@"未找到文件"
-                         message:@"请先点开文件预览，再试。"];
-    }
+    // 不再使用，保留空实现
 }
 
 + (void)shareFileAtPath:(NSString *)filePath {
@@ -88,18 +69,19 @@
 
     if (shareVC.popoverPresentationController) {
         UIViewController *top = [ELKRuntimeHelper topViewController];
-        CGFloat hw = top.view.bounds.size.width / 2.0;
-        CGFloat hh = top.view.bounds.size.height / 2.0;
         shareVC.popoverPresentationController.sourceView = top.view;
-        shareVC.popoverPresentationController.sourceRect =
-            (CGRect){{hw, hh}, {0, 0}};
+        CGFloat hw = top.view.bounds.size.width / 2;
+        CGFloat hh = top.view.bounds.size.height / 2;
+        shareVC.popoverPresentationController.sourceRect = (CGRect){{hw, hh}, {0, 0}};
         shareVC.popoverPresentationController.permittedArrowDirections = 0;
     }
 
     UIViewController *vc = [ELKRuntimeHelper topViewController];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [vc presentViewController:shareVC animated:YES completion:nil];
-    });
+    if (vc) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [vc presentViewController:shareVC animated:YES completion:nil];
+        });
+    }
 }
 
 + (void)showAlertWithTitle:(NSString *)title message:(NSString *)message {
@@ -110,7 +92,7 @@
             alertControllerWithTitle:title message:message
             preferredStyle:UIAlertControllerStyleAlert];
         [a addAction:[UIAlertAction actionWithTitle:@"确定"
-            style:UIAlertActionStyleDefault handler:nil]];
+                                              style:UIAlertActionStyleDefault handler:nil]];
         [vc presentViewController:a animated:YES completion:nil];
     });
 }
