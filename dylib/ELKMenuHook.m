@@ -193,8 +193,6 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
     NSMutableString *found = [NSMutableString string];
     for (unsigned int i = 0; i < count && i < 200; i++) {
         @try {
-            const char *attr = property_getAttributes(props[i]);
-            NSString *attrStr = [NSString stringWithUTF8String:attr ?: ""];
             NSString *pName = [NSString stringWithUTF8String:property_getName(props[i])];
             id val = [v valueForKey:pName];
 
@@ -286,7 +284,8 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
         NSString *cacheDir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
         NSArray *cacheFiles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:cacheDir error:nil];
         [s appendFormat:@"  Caches (%lu files):\n", (unsigned long)cacheFiles.count];
-        for (NSString *f in cacheFiles.prefix(50)) {
+        NSArray *topCache = cacheFiles.count > 50 ? [cacheFiles subarrayWithRange:NSMakeRange(0, 50)] : cacheFiles;
+        for (NSString *f in topCache) {
             NSString *fp = [cacheDir stringByAppendingPathComponent:f];
             unsigned long long sz = [[[NSFileManager defaultManager] attributesOfItemAtPath:fp error:nil] fileSize];
             if (sz > 10000) {
