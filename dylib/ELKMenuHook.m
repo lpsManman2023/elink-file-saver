@@ -1,11 +1,6 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - v8 文件系统监控方案
-//
-//  唯一 Hook：UINavigationController.pushViewController:
-//  只做两件事：检测预览页 → 加按钮 → 按钮点导出
-//
-//  文件查找全部走 ELKFileExporter（纯文件系统操作，零崩溃风险）
+//  ELKFileSaver - v12 快照差分方案
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
@@ -15,7 +10,6 @@
 + (void)addExportButton:(UIViewController *)vc;
 @end
 
-// ── 唯一 Hook ──
 static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
 
 static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) {
@@ -36,32 +30,31 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
         if (!isPreview) return;
 
         NSLog(@"[喵喵] 🎯 预览页: %@", cn);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+
+        // 🔥 拍快照 → 等解密 → 找新增文件
+        [ELKFileExporter takeBeforeSnapshot];
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            [ELKFileExporter findNewFilesAfterSnapshot];
             [ELKMenuHook addExportButton:vc];
         });
     } @catch (...) {}
 }
 
-// ============================================================
 @implementation ELKMenuHook
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install v10");
-
-        // Hook pushVC
+        NSLog(@"[喵喵] 🚀 install v12");
         Method m = class_getInstanceMethod([UINavigationController class],
                                            @selector(pushViewController:animated:));
         if (m) {
             orig_pushVC = (void(*)(id, SEL, UIViewController *, BOOL))method_getImplementation(m);
             method_setImplementation(m, (IMP)hook_pushVC);
-            NSLog(@"[喵喵] ✅ pushVC Hook 完成");
+            NSLog(@"[喵喵] ✅ 已安装");
         }
-        NSLog(@"[喵喵] 🏁 安装完成");
-    } @catch (NSException *e) {
-        NSLog(@"[喵喵] ❌ %@", e);
-    }
+    } @catch (NSException *e) {}
 }
 
 + (void)addExportButton:(UIViewController *)vc {
@@ -80,15 +73,14 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 }
 
 + (void)handleExport:(UIBarButtonItem *)sender {
-    // 🔥 后台扫描文件，主线程展示结果
-    [ELKFileExporter findDecryptedFileAsync:^(NSString *path) {
-        if (path) {
-            [ELKFileExporter shareFileAtPath:path];
-        } else {
-            [ELKFileExporter showAlertWithTitle:@"未找到解密文件"
-                                         message:@"请确认：\n\n① 文件已在预览中打开\n② 文件已下载完成\n\n提示：点开文件查看后，\n立即点右上角「📤导出」。"];
-        }
-    }];
+    NSString *path = [ELKFileExporter cachedFile];
+    if (path) {
+        NSLog(@"[喵喵] 📤 导出: %@", [path lastPathComponent]);
+        [ELKFileExporter shareFileAtPath:path];
+    } else {
+        [ELKFileExporter showAlertWithTitle:@"未找到解密文件"
+                                     message:@"请先点开文件预览，\n等待文件加载完成后，\n再点「📤导出」。"];
+    }
 }
 
 @end

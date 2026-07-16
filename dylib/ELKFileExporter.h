@@ -1,16 +1,22 @@
 //
 //  ELKFileExporter.h
-//  ELKFileSaver - v11 异步扫描版
+//  ELKFileSaver - v12 快照+新增检测
 //
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
 @interface ELKFileExporter : NSObject
 
-/// 异步扫描 tmp/Caches 找解密文件，完成回调在主线程
-+ (void)findDecryptedFileAsync:(void(^)(NSString *_Nullable path))completion;
+/// 在预览页打开前拍文件快照
++ (void)takeBeforeSnapshot;
 
-/// 弹出系统分享菜单
+/// 在预览页打开后找新增文件（后台线程）
++ (void)findNewFilesAfterSnapshot;
+
+/// 获取缓存的最佳文件路径
++ (NSString *)cachedFile;
+
+/// 弹出分享菜单
 + (void)shareFileAtPath:(NSString *)filePath;
 
 /// 弹出提示框
