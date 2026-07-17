@@ -1,24 +1,26 @@
 # ELKFileSaver - 南网 eLink 聊天文件导出插件
 
-长按 eLink 聊天中的文件/图片/视频消息，菜单中会多出一个「**保存到文件**」选项，点击即可导出到 iPhone 的「文件」App。
+点开 eLink 聊天中的文件/图片/视频预览，右上角出现「📤导出」按钮，点击即可导出到 iPhone 的「文件」App。
 
-> 适用于 TrollStore (巨魔商店) 用户，iOS 14+，无需越狱。
+> 适用于 TrollStore (巨魔商店) + TrollFools 用户，iOS 14+，无需越狱。
 
 ---
 
 ## 工作原理
 
 ```
-长按聊天文件消息
+点一下聊天文件消息 → 进入预览页（eLink 解密文件到临时目录）
     ↓
-菜单弹出（转发 / 收藏 / ... / 保存到文件 ← 新增！）
-    ↓ 点击"保存到文件"
-自动获取已解密文件
+插件检测到预览页 → 拍文件系统快照
     ↓
-弹出系统文件选择器 → 选择保存位置 → 完成 ✅
+等待 0.8 秒 → 对比快照，找到新增的解密文件
+    ↓
+预览页右上角出现「📤导出」按钮
+    ↓
+点击导出 → 系统分享菜单 → 存储到文件 ✅
 ```
 
-文件在 eLink 中是 AES 加密存储的。插件在文件**已解密**的阶段（`localPath`）进行拦截，因此导出的文件可以直接使用。
+**核心思路：纯文件系统监控，不碰 App 内部对象。**
 
 ---
 
@@ -27,57 +29,56 @@
 | 材料 | 说明 |
 |------|------|
 | 一个 GitHub 账号 | 免费注册: https://github.com/signup |
-| 南网 eLink IPA | 就是你手头的 `南网eLink-2.6.850001.ipa` |
-| iPhone 已装 TrollStore | iOS 14-16.x, CoreTrust 漏洞范围 |
+| iPhone 已装 TrollStore | iOS 14-16.x / 17.0 |
+| iPhone 已装 TrollFools | 巨魔注入器，用于注入 dylib 到 App |
+| 南网 eLink | 手机上已安装即可，不需要 IPA 文件 |
 
 ---
 
-## 使用方法（3 步）
+## 使用方法（4 步）
 
 ### 第 1 步：Fork 仓库
 
 点击本仓库右上角的 **Fork** 按钮，把代码复制到你的 GitHub 账号下。
 
-### 第 2 步：上传 IPA + 运行
+### 第 2 步：编译 dylib
 
-1. 在你的 Fork 仓库中，进入 `ipa/` 目录
-2. 点击 **Add file → Upload files**，把你的 `南网eLink-2.6.850001.ipa` 拖进去
-3. 提交 (Commit)
-4. 点击仓库顶部的 **Actions** 标签 → 左侧选 **Build ELKFileSaver IPA** → 点击 **Run workflow** 蓝色按钮 → 再次点 **Run workflow** 确认
-5. 等待约 **3 分钟**，构建完成
-6. 页面底部 **Artifacts** 区域会出现 `eLink_FileSaver`，点击下载
+1. 在你的 Fork 仓库中，点击顶部的 **Actions** 标签
+2. 左侧选 **Build ELKFileSaver dylib**
+3. 点击右侧 **Run workflow** → 再点绿色 **Run workflow**
+4. 等待约 **1 分钟**，构建完成
+5. 页面底部 **Artifacts** 区域出现 `ELKFileSaver_dylib`，点击下载
+6. 解压得到 `ELKFileSaver.dylib`
 
-### 第 3 步：安装到手机
+### 第 3 步：注入到 eLink
 
-1. 解压下载的 `eLink_FileSaver.zip`，得到 `eLink_FileSaver.ipa`
-2. 把 IPA 传到 iPhone（微信/QQ/AirDrop/爱思助手 均可）
-3. 在 iPhone 上打开 **TrollStore** → **Install from file** → 选择 IPA
-4. 安装完成，打开 eLink，试试长按一个文件消息！
+1. 把 `ELKFileSaver.dylib` 传到 iPhone（微信/QQ/AirDrop/爱思助手均可）
+2. 打开 **TrollFools**
+3. 在应用列表中找到 **eLink**（或南网eLink）
+4. 点击 → 选择注入 → 找到 `ELKFileSaver.dylib`
+5. 注入完成 ✅
 
----
+### 第 4 步：使用
 
-## 如果菜单没出现？
-
-由于无法在真机上调试，Hook 方法名是基于二进制分析**推测**的。如果菜单没有出现：
-
-1. 在 iPhone 上安装 **Frida**（TrollStore 可直接装 frida-server）
-2. 连接电脑运行以下命令，查看调用栈：
-   ```
-   frida -U -l debug.js 南网eLink
-   ```
-3. 把日志发给我，我会修正 Hook 点
+1. 打开 eLink → 看到「🐱 喵喵插件」弹窗确认注入成功
+2. 进入任意聊天 → **点一下**文件/图片/视频消息（打开预览）
+3. 预览页右上角出现 **「📤导出」** 按钮
+4. 点击导出 → 系统分享菜单 → **存储到文件** ✅
 
 ---
 
-## 仅支持的文件类型
+## 支持的文件类型
 
 | 消息类型 | 支持 |
-|----------|------|
+|----------|:---:|
+| PDF 文件 | ✅ |
+| Word / Excel / PPT | ✅ |
 | 图片 | ✅ |
 | 视频 | ✅ |
-| 文件 (Word/Excel/PDF 等) | ✅ |
 | 语音 | ✅ |
-| 文本 | ❌ (不是文件) |
+| 压缩包 (ZIP/RAR/7Z) | ✅ |
+| CAD 图纸 (DWG/DXF/DGN) | ✅ |
+| 文本 | ❌ (非文件类型) |
 | 链接卡片 | ❌ |
 
 ---
@@ -89,13 +90,14 @@ elink-file-saver/
 ├── .github/workflows/build.yml   ← GitHub Actions 配置
 ├── dylib/
 │   ├── entry.m                   ← dylib 入口
-│   ├── ELKMenuHook.m             ← 菜单 Hook
-│   ├── ELKFileExporter.m         ← 文件导出
-│   ├── ELKRuntimeHelper.m        ← Swizzling 工具
+│   ├── ELKMenuHook.m             ← 预览页检测 + 导出按钮
+│   ├── ELKFileExporter.m         ← 文件系统监控 + 导出
+│   ├── ELKRuntimeHelper.m        ← 工具方法
+│   ├── ELKMenuHook.h
+│   ├── ELKFileExporter.h
+│   ├── ELKRuntimeHelper.h
 │   └── Makefile                  ← dylib 编译
-├── tools/                        ← insert_dylib 源码（自动克隆）
-├── ipa/                          ← 放原始 IPA
-├── build.sh                      ← 完整构建脚本
+├── build.sh                      ← 构建脚本（仅编译 dylib）
 └── README.md
 ```
 
@@ -104,13 +106,22 @@ elink-file-saver/
 ## 常见问题
 
 **Q: 会封号吗？**
-A: 这是本地注入，只修改了 App 本地行为，不涉及网络协议。TrollStore 安装的 App 无法检测注入。
+A: 这是本地注入，只读取文件系统临时目录中的解密文件，不修改任何网络协议。TrollStore 安装的 App 无法检测注入。
 
 **Q: eLink 更新后还能用吗？**
-A: 把新版本 IPA 放到 `ipa/` 目录，重新跑一次 Actions 即可。
+A: 可以。更新 App 后，重新用 TrollFools 注入一次 dylib 即可（TrollFools 支持重新注入）。
 
 **Q: 不登录能构建吗？**
 A: 可以。GitHub Actions 对公开仓库免费且无限使用。
+
+**Q: 点导出后提示"未找到解密文件"？**
+A: 请确保文件已在预览中**完整加载**后再点导出。可以先看完文件内容，再点按钮。
+
+**Q: 导出文件名是数字/哈希？**
+A: eLink 内部用哈希命名解密文件，这是已知限制。文件内容正确可用，可以通过重命名修改。
+
+**Q: 安装到 3.3.0 版本能工作吗？**
+A: 可以。插件不依赖 eLink 版本，通过文件系统监控工作，所有版本通用。
 
 ---
 
