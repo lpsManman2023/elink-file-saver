@@ -1,11 +1,45 @@
 //
 //  ELKFileExporter.m
-//  ELKFileSaver - v15 智能过滤
+//  ELKFileSaver - v16 美化版
 //
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
 
-// ── 文件名纯数字检测 ──
+// ── 文件 emoji 图标 ──
+static NSString *fileIcon(NSString *name) {
+    NSString *ext = [[name pathExtension] lowercaseString];
+    if (ext.length == 0) return @"📎";
+
+    // 文档
+    if ([ext isEqualToString:@"pdf"])  return @"📕";
+    if ([ext isEqualToString:@"doc"] || [ext isEqualToString:@"docx"]) return @"📝";
+    if ([ext isEqualToString:@"xls"] || [ext isEqualToString:@"xlsx"] || [ext isEqualToString:@"csv"]) return @"📊";
+    if ([ext isEqualToString:@"ppt"] || [ext isEqualToString:@"pptx"]) return @"📽️";
+    if ([ext isEqualToString:@"txt"] || [ext isEqualToString:@"rtf"]) return @"📄";
+
+    // 图片
+    if ([ext isEqualToString:@"png"] || [ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"] ||
+        [ext isEqualToString:@"gif"] || [ext isEqualToString:@"bmp"] || [ext isEqualToString:@"heic"] ||
+        [ext isEqualToString:@"webp"]) return @"🖼️";
+
+    // 视频
+    if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) return @"🎬";
+
+    // 音频
+    if ([ext isEqualToString:@"mp3"] || [ext isEqualToString:@"m4a"] || [ext isEqualToString:@"wav"] ||
+        [ext isEqualToString:@"aac"]) return @"🎵";
+
+    // 压缩包
+    if ([ext isEqualToString:@"zip"] || [ext isEqualToString:@"rar"] || [ext isEqualToString:@"7z"]) return @"📦";
+
+    // CAD
+    if ([ext isEqualToString:@"dwg"] || [ext isEqualToString:@"dxf"] || [ext isEqualToString:@"dgn"]) return @"📐";
+
+    // 其他
+    return @"📎";
+}
+
+// ── 纯数字文件名检测 ──
 static BOOL isNumericName(NSString *name) {
     NSString *base = [name stringByDeletingPathExtension];
     if (base.length == 0) return NO;
@@ -13,23 +47,14 @@ static BOOL isNumericName(NSString *name) {
     return [base rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
 }
 
-// ── 方案4过滤：应该显示这个文件吗？ ──
+// ── 方案4过滤 ──
 static BOOL shouldIncludeFile(NSString *path, unsigned long long size) {
     if (size < 100) return NO;
     NSString *name = [path lastPathComponent];
     NSString *ext  = [[name pathExtension] lowercaseString];
-
-    // 规则1: 有扩展名 → 显示
     if (ext.length > 0) return YES;
-
-    // 无扩展名
-    // 规则2: 纯数字文件名 → 不显示
     if (isNumericName(name)) return NO;
-
-    // 规则3: 非纯数字 + 大于100KB → 显示
     if (size > 100000) return YES;
-
-    // 规则4: 小于100KB → 不显示
     return NO;
 }
 
@@ -50,12 +75,12 @@ static NSArray *scanRoots(void) {
     return roots;
 }
 
-// ── 扫描所有文件（后台调用） ──
+// ── 扫描所有文件 ──
 static NSArray *listAllFiles(void) {
     NSMutableArray *files = [NSMutableArray array];
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *root in scanRoots()) {
-        NSString *source = [root lastPathComponent]; // "Decript" or "Files"
+        NSString *source = [root lastPathComponent];
         @try {
             NSDirectoryEnumerator *e = [fm enumeratorAtPath:root];
             if (!e) continue;
@@ -92,6 +117,7 @@ static NSArray *listAllFiles(void) {
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) UISearchBar *search;
 @property (nonatomic, strong) UILabel *countLabel;
+@property (nonatomic, strong) UILabel *emptyLabel;
 @end
 
 @implementation FileBrowserVC
@@ -106,19 +132,26 @@ static NSArray *listAllFiles(void) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"选择文件导出";
+    self.title = @"📁 文件浏览器";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-    // 关闭按钮
+    // ✕ 关闭按钮
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"关闭" style:UIBarButtonItemStyleDone target:self action:@selector(close)];
+        initWithTitle:@"✕" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
 
     // 搜索框
     self.search = [[UISearchBar alloc] initWithFrame:(CGRect){{0,0},{self.view.bounds.size.width,44}}];
-    self.search.placeholder = @"输入文件名搜索...";
+    self.search.placeholder = @"🔍 输入文件名搜索...";
     self.search.delegate = self;
     self.search.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.search.autocorrectionType = UITextAutocorrectionTypeNo;
+
+    // 表格
+    self.table = [[UITableView alloc] initWithFrame:(CGRect){{0,0},{0,0}} style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 60;
+    [self.table registerClass:[UITableViewCell class] forCellReuseIdentifier:@"c"];
 
     // 底部统计
     self.countLabel = [[UILabel alloc] init];
@@ -127,20 +160,24 @@ static NSArray *listAllFiles(void) {
     self.countLabel.textAlignment = NSTextAlignmentCenter;
     [self updateCount];
 
-    // 表格 — 使用 subtitle 样式显示目录来源
-    self.table = [[UITableView alloc] initWithFrame:(CGRect){{0,0},{0,0}} style:UITableViewStylePlain];
-    self.table.dataSource = self;
-    self.table.delegate = self;
-    self.table.rowHeight = 52;
-    [self.table registerClass:[UITableViewCell class] forCellReuseIdentifier:@"c"];
+    // 空状态提示
+    self.emptyLabel = [[UILabel alloc] init];
+    self.emptyLabel.text = @"🐱 没有找到喵～\n试试换个关键词";
+    self.emptyLabel.numberOfLines = 2;
+    self.emptyLabel.textAlignment = NSTextAlignmentCenter;
+    self.emptyLabel.textColor = [UIColor lightGrayColor];
+    self.emptyLabel.font = [UIFont systemFontOfSize:16];
+    self.emptyLabel.hidden = (self.filteredFiles.count > 0);
 
     [self.view addSubview:self.search];
     [self.view addSubview:self.table];
     [self.view addSubview:self.countLabel];
+    [self.view addSubview:self.emptyLabel];
 
     self.search.translatesAutoresizingMaskIntoConstraints = NO;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
     self.countLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
 
     [NSLayoutConstraint activateConstraints:@[
         [self.search.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
@@ -154,11 +191,14 @@ static NSArray *listAllFiles(void) {
         [self.countLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.countLabel.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-4],
         [self.countLabel.heightAnchor constraintEqualToConstant:26],
+        [self.emptyLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.emptyLabel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
     ]];
 }
 
 - (void)updateCount {
     self.countLabel.text = [NSString stringWithFormat:@"共 %lu 个文件", (unsigned long)self.filteredFiles.count];
+    self.emptyLabel.hidden = (self.filteredFiles.count > 0);
 }
 
 - (void)close {
@@ -196,12 +236,12 @@ static NSArray *listAllFiles(void) {
     unsigned long long sz = [d[@"size"] unsignedLongLongValue];
     NSString *source = d[@"source"];
 
-    // 标题：文件名
-    c.textLabel.text = name;
+    // 标题：emoji 图标 + 文件名
+    c.textLabel.text = [NSString stringWithFormat:@"%@  %@", fileIcon(name), name];
     c.textLabel.font = [UIFont systemFontOfSize:15];
     c.textLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
 
-    // 副标题：大小 + 来源目录
+    // 副标题：大小 + 来源
     NSString *sizeStr;
     if (sz > 1048576)      sizeStr = [NSString stringWithFormat:@"%.1f MB", sz / 1048576.0];
     else if (sz > 1024)    sizeStr = [NSString stringWithFormat:@"%llu KB", sz / 1024];

@@ -50,10 +50,10 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 + (void)addButtonToVC:(UIViewController *)vc {
     if (!vc || !vc.navigationItem) return;
     for (UIBarButtonItem *item in vc.navigationItem.rightBarButtonItems) {
-        if ([item.title isEqualToString:@"📤"]) return;
+        if ([item.title isEqualToString:@"📤 导出"]) return;
     }
     UIBarButtonItem *btn = [[UIBarButtonItem alloc]
-        initWithTitle:@"📤" style:UIBarButtonItemStylePlain
+        initWithTitle:@"📤 导出" style:UIBarButtonItemStylePlain
         target:self action:@selector(onExportTap)];
     NSMutableArray *items = vc.navigationItem.rightBarButtonItems
         ? [vc.navigationItem.rightBarButtonItems mutableCopy] : [NSMutableArray array];

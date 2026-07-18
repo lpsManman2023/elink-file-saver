@@ -49,8 +49,17 @@
 }
 
 + (UIViewController *)topViewController {
-    UIViewController *root = [UIApplication sharedApplication].keyWindow.rootViewController;
-    return [self topViewControllerFrom:root];
+    // iOS 13+ 兼容方式获取 keyWindow
+    UIWindow *keyWin = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                if (w.isKeyWindow) { keyWin = w; break; }
+            }
+        }
+    }
+    if (!keyWin) keyWin = [UIApplication sharedApplication].keyWindow;
+    return [self topViewControllerFrom:keyWin.rootViewController];
 }
 
 + (UIViewController *)topViewControllerFrom:(UIViewController *)vc {
