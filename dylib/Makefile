@@ -22,7 +22,8 @@ CFLAGS     = -arch $(ARCH) \
              -O2 \
              -Wall \
              -Wextra \
-             -Wno-unused-parameter
+             -Wno-unused-parameter \
+             -DMY_VERSION=\"$(VER)\"
 
 LDFLAGS    = -framework Foundation \
              -framework UIKit \

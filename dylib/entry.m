@@ -1,6 +1,6 @@
 //
 //  entry.m
-//  ELKFileSaver - 喵喵插件 v17 全功能版
+//  ELKFileSaver - 喵喵插件
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
@@ -47,7 +47,7 @@ __attribute__((constructor))
 static void ELKFileSaverInit(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        NSLog(@"[喵喵] 🚀 v17 全功能版");
+        NSLog(@"[喵喵] 🚀 v" MY_VERSION " 已加载");
         [ELKMenuHook install];
 
         // 后台预加载文件列表（更新按钮角标）
@@ -60,7 +60,7 @@ static void ELKFileSaverInit(void) {
             if ([[NSDate date] timeIntervalSince1970] - last < 86400) return;
 
             UIAlertController *a = [UIAlertController
-                alertControllerWithTitle:@"🐱 喵喵插件 v17"
+                alertControllerWithTitle:@"🐱 喵喵插件 v" MY_VERSION
                 message:[NSString stringWithFormat:@"%@\n\n━━━━━━━━━━━━━━━━\n%@\n━━━━━━━━━━━━━━━━\n✅ 注入成功！\n右上角「📤 导出」→ 浏览文件", timeGreeting(), randomTip()]
                 preferredStyle:UIAlertControllerStyleAlert];
             [a addAction:[UIAlertAction actionWithTitle:@"喵～" style:UIAlertActionStyleDefault handler:nil]];
