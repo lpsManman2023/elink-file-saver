@@ -1,9 +1,37 @@
 //
 //  ELKFileExporter.m
-//  ELKFileSaver - v14 文件浏览器
+//  ELKFileSaver - v15 智能过滤
 //
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
+
+// ── 文件名纯数字检测 ──
+static BOOL isNumericName(NSString *name) {
+    NSString *base = [name stringByDeletingPathExtension];
+    if (base.length == 0) return NO;
+    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    return [base rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
+}
+
+// ── 方案4过滤：应该显示这个文件吗？ ──
+static BOOL shouldIncludeFile(NSString *path, unsigned long long size) {
+    if (size < 100) return NO;
+    NSString *name = [path lastPathComponent];
+    NSString *ext  = [[name pathExtension] lowercaseString];
+
+    // 规则1: 有扩展名 → 显示
+    if (ext.length > 0) return YES;
+
+    // 无扩展名
+    // 规则2: 纯数字文件名 → 不显示
+    if (isNumericName(name)) return NO;
+
+    // 规则3: 非纯数字 + 大于100KB → 显示
+    if (size > 100000) return YES;
+
+    // 规则4: 小于100KB → 不显示
+    return NO;
+}
 
 // ── 扫描根目录 ──
 static NSArray *scanRoots(void) {
@@ -27,6 +55,7 @@ static NSArray *listAllFiles(void) {
     NSMutableArray *files = [NSMutableArray array];
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *root in scanRoots()) {
+        NSString *source = [root lastPathComponent]; // "Decript" or "Files"
         @try {
             NSDirectoryEnumerator *e = [fm enumeratorAtPath:root];
             if (!e) continue;
@@ -37,14 +66,17 @@ static NSArray *listAllFiles(void) {
                     NSDictionary *a = [fm attributesOfItemAtPath:fp error:nil];
                     if (!a || [a[NSFileType] isEqualToString:NSFileTypeDirectory]) continue;
                     unsigned long long sz = [a[NSFileSize] unsignedLongLongValue];
-                    if (sz < 100) continue;
-                    // 存入 path + size + date
-                    [files addObject:@{@"path":fp, @"size":@(sz), @"date":a[NSFileModificationDate] ?: [NSDate distantPast]}];
+                    if (!shouldIncludeFile(fp, sz)) continue;
+                    [files addObject:@{
+                        @"path":   fp,
+                        @"size":   @(sz),
+                        @"date":   a[NSFileModificationDate] ?: [NSDate distantPast],
+                        @"source": source
+                    }];
                 }
             }
         } @catch (...) {}
     }
-    // 按修改时间倒序
     [files sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
         return [b[@"date"] compare:a[@"date"]];
     }];
@@ -55,10 +87,11 @@ static NSArray *listAllFiles(void) {
 //  文件浏览器 VC
 // ============================================================
 @interface FileBrowserVC : UIViewController <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, strong) NSArray *allFiles;       // dict array
-@property (nonatomic, strong) NSArray *filteredFiles;   // dict array
+@property (nonatomic, strong) NSArray *allFiles;
+@property (nonatomic, strong) NSArray *filteredFiles;
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) UISearchBar *search;
+@property (nonatomic, strong) UILabel *countLabel;
 @end
 
 @implementation FileBrowserVC
@@ -82,24 +115,33 @@ static NSArray *listAllFiles(void) {
 
     // 搜索框
     self.search = [[UISearchBar alloc] initWithFrame:(CGRect){{0,0},{self.view.bounds.size.width,44}}];
-    self.search.placeholder = @"输入文件名关键词搜索...";
+    self.search.placeholder = @"输入文件名搜索...";
     self.search.delegate = self;
     self.search.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.search.autocorrectionType = UITextAutocorrectionTypeNo;
 
-    // 表格
+    // 底部统计
+    self.countLabel = [[UILabel alloc] init];
+    self.countLabel.font = [UIFont systemFontOfSize:12];
+    self.countLabel.textColor = [UIColor grayColor];
+    self.countLabel.textAlignment = NSTextAlignmentCenter;
+    [self updateCount];
+
+    // 表格 — 使用 subtitle 样式显示目录来源
     self.table = [[UITableView alloc] initWithFrame:(CGRect){{0,0},{0,0}} style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
-    self.table.rowHeight = 50;
+    self.table.rowHeight = 52;
     [self.table registerClass:[UITableViewCell class] forCellReuseIdentifier:@"c"];
 
     [self.view addSubview:self.search];
     [self.view addSubview:self.table];
+    [self.view addSubview:self.countLabel];
 
-    // layout
     self.search.translatesAutoresizingMaskIntoConstraints = NO;
     self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    self.countLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
     [NSLayoutConstraint activateConstraints:@[
         [self.search.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
         [self.search.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -107,8 +149,16 @@ static NSArray *listAllFiles(void) {
         [self.table.topAnchor constraintEqualToAnchor:self.search.bottomAnchor],
         [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.countLabel.topAnchor constraintEqualToAnchor:self.table.bottomAnchor],
+        [self.countLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.countLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.countLabel.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-4],
+        [self.countLabel.heightAnchor constraintEqualToConstant:26],
     ]];
+}
+
+- (void)updateCount {
+    self.countLabel.text = [NSString stringWithFormat:@"共 %lu 个文件", (unsigned long)self.filteredFiles.count];
 }
 
 - (void)close {
@@ -121,12 +171,13 @@ static NSArray *listAllFiles(void) {
         self.filteredFiles = self.allFiles;
     } else {
         NSString *lower = [text lowercaseString];
-        NSPredicate *pred = [NSPredicate predicateWithBlock:^BOOL(NSDictionary *d, id _) {
-            return [[d[@"path"] lastPathComponent].lowercaseString containsString:lower];
-        }];
-        self.filteredFiles = [self.allFiles filteredArrayUsingPredicate:pred];
+        self.filteredFiles = [self.allFiles filteredArrayUsingPredicate:
+            [NSPredicate predicateWithBlock:^BOOL(NSDictionary *d, id _) {
+                return [[d[@"path"] lastPathComponent].lowercaseString containsString:lower];
+            }]];
     }
     [self.table reloadData];
+    [self updateCount];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)bar {
@@ -143,17 +194,22 @@ static NSArray *listAllFiles(void) {
     NSDictionary *d = self.filteredFiles[ip.row];
     NSString *name = [[d[@"path"] lastPathComponent] copy];
     unsigned long long sz = [d[@"size"] unsignedLongLongValue];
+    NSString *source = d[@"source"];
 
+    // 标题：文件名
     c.textLabel.text = name;
     c.textLabel.font = [UIFont systemFontOfSize:15];
     c.textLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
 
-    // 文件大小
+    // 副标题：大小 + 来源目录
     NSString *sizeStr;
-    if (sz > 1048576) sizeStr = [NSString stringWithFormat:@"%.1f MB", sz / 1048576.0];
-    else if (sz > 1024) sizeStr = [NSString stringWithFormat:@"%llu KB", sz / 1024];
-    else sizeStr = [NSString stringWithFormat:@"%llu B", sz];
-    c.detailTextLabel.text = sizeStr;
+    if (sz > 1048576)      sizeStr = [NSString stringWithFormat:@"%.1f MB", sz / 1048576.0];
+    else if (sz > 1024)    sizeStr = [NSString stringWithFormat:@"%llu KB", sz / 1024];
+    else                   sizeStr = [NSString stringWithFormat:@"%llu B", sz];
+
+    c.detailTextLabel.text = [NSString stringWithFormat:@"%@  ·  %@", sizeStr, source];
+    c.detailTextLabel.textColor = [UIColor grayColor];
+    c.detailTextLabel.font = [UIFont systemFontOfSize:12];
     c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 
     return c;
@@ -162,9 +218,8 @@ static NSArray *listAllFiles(void) {
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
     NSDictionary *d = self.filteredFiles[ip.row];
-    NSString *path = d[@"path"];
     [self dismissViewControllerAnimated:YES completion:^{
-        [ELKFileExporter shareFileAtPath:path];
+        [ELKFileExporter shareFileAtPath:d[@"path"]];
     }];
 }
 
