@@ -81,14 +81,14 @@ static NSArray *listAllFiles(void) {
         initWithTitle:@"关闭" style:UIBarButtonItemStyleDone target:self action:@selector(close)];
 
     // 搜索框
-    self.search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 44)];
+    self.search = [[UISearchBar alloc] initWithFrame:(CGRect){{0,0},{self.view.bounds.size.width,44}}];
     self.search.placeholder = @"输入文件名关键词搜索...";
     self.search.delegate = self;
     self.search.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.search.autocorrectionType = UITextAutocorrectionTypeNo;
 
     // 表格
-    self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.table = [[UITableView alloc] initWithFrame:(CGRect){{0,0},{0,0}} style:UITableViewStylePlain];
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.rowHeight = 50;
