@@ -1,126 +1,30 @@
 //
 //  ELKFileExporter.m
-//  ELKFileSaver - v13 沙箱直读版
+//  ELKFileSaver - v14 文件浏览器
 //
 #import "ELKFileExporter.h"
 #import "ELKRuntimeHelper.h"
 
-static NSString *g_cachedFile = nil;
-static NSMutableSet *g_beforeSnapshot = nil;
-
-// ── 打分：文件名越像文档，分数越高 ──
-static int fileScore(NSString *path, unsigned long long size) {
-    if (size < 5000) return 0;
-    NSString *name = [path lastPathComponent];
-
-    // 🔥 Decript 目录的文件 → 最优先（原始文件名+解密内容）
-    if ([path containsString:@"/Decript/"]) return 200;
-
-    // 系统文件 0 分
-    if ([name hasPrefix:@"CFNetwork"]) return 0;
-    if ([name hasPrefix:@"NSIRD"]) return 0;
-    if ([name hasPrefix:@"com.apple"]) return 0;
-    if ([name hasPrefix:@"."]) return 0;
-    if ([name isEqualToString:@".DS_Store"]) return 0;
-
-    NSString *ext = [[name pathExtension] lowercaseString];
-
-    // 垃圾扩展名 0 分
-    NSArray *bad = @[@"plist",@"db",@"sqlite",@"sqlite3",@"dat",@"idx",@"log",@"json",@"tmp"];
-    if (ext.length > 0) {
-        for (NSString *b in bad) { if ([ext isEqualToString:b]) return 0; }
-    }
-
-    // 文档后缀 → 高分
-    NSArray *docs = @[@"pdf",@"doc",@"docx",@"xls",@"xlsx",@"ppt",@"pptx",
-                      @"txt",@"csv",@"rtf",@"pages",@"numbers",@"key",
-                      @"dwg",@"dxf",@"dgn"];
-    for (NSString *d in docs) { if ([ext isEqualToString:d]) return 100; }
-
-    // 媒体/压缩后缀
-    NSArray *media = @[@"png",@"jpg",@"jpeg",@"gif",@"bmp",@"heic",@"webp",
-                       @"mp4",@"mov",@"m4v",@"mp3",@"m4a",@"wav",@"aac",
-                       @"zip",@"rar",@"7z"];
-    for (NSString *m in media) { if ([ext isEqualToString:m]) return 50; }
-
-    // 大文件无后缀
-    if (ext.length == 0 && size > 500000) return 10;
-    return 5;
-}
-
-// ── 构建沙箱扫描根目录列表 ──
+// ── 扫描根目录 ──
 static NSArray *scanRoots(void) {
     NSMutableArray *roots = [NSMutableArray array];
-
-    // tmp / Caches
-    NSString *tmp = NSTemporaryDirectory();
-    NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
-    if (tmp.length) [roots addObject:tmp];
-    if (caches.length) [roots addObject:caches];
-
-    // 🔥 沙箱 Documents/Profiles/*/ 下的 Decript/ 和 Files/
     NSString *profilesDir = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/Profiles"];
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *profileIDs = [fm contentsOfDirectoryAtPath:profilesDir error:nil];
-    for (NSString *pid in profileIDs) {
-        @autoreleasepool {
-            NSString *pidPath = [profilesDir stringByAppendingPathComponent:pid];
-            BOOL isDir = NO;
-            if (![fm fileExistsAtPath:pidPath isDirectory:&isDir] || !isDir) continue;
-
-            for (NSString *sub in @[@"Decript", @"Files"]) {
-                NSString *subPath = [pidPath stringByAppendingPathComponent:sub];
-                if ([fm fileExistsAtPath:subPath]) {
-                    [roots addObject:subPath];
-                }
-            }
+    for (NSString *pid in [fm contentsOfDirectoryAtPath:profilesDir error:nil]) {
+        NSString *pidPath = [profilesDir stringByAppendingPathComponent:pid];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:pidPath isDirectory:&isDir] || !isDir) continue;
+        for (NSString *sub in @[@"Decript", @"Files"]) {
+            NSString *p = [pidPath stringByAppendingPathComponent:sub];
+            if ([fm fileExistsAtPath:p]) [roots addObject:p];
         }
     }
-
     return roots;
 }
 
-// ── 递归扫描目录（后台线程使用） ──
-static void scanRootsForBest(NSArray *roots, NSString **bestPath, int *bestScore, unsigned long long *bestSize,
-                             NSMutableSet *skipSet) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *root in roots) {
-        if (root.length == 0) continue;
-        @try {
-            NSDirectoryEnumerator *e = [fm enumeratorAtPath:root];
-            if (!e) continue;
-            NSString *rp;
-            while ((rp = [e nextObject])) {
-                @autoreleasepool {
-                    NSString *fp = [root stringByAppendingPathComponent:rp];
-                    NSDictionary *a = [fm attributesOfItemAtPath:fp error:nil];
-                    if (!a || [a[NSFileType] isEqualToString:NSFileTypeDirectory]) continue;
-
-                    unsigned long long sz = [a[NSFileSize] unsignedLongLongValue];
-                    NSString *key = [NSString stringWithFormat:@"%@|%@", fp, a[NSFileSize]];
-
-                    // 如果给了 skipSet，跳过已存在的
-                    if (skipSet && [skipSet containsObject:key]) continue;
-
-                    int score = fileScore(fp, sz);
-                    if (score == 0) continue;
-
-                    if (score > *bestScore || (score == *bestScore && sz > *bestSize)) {
-                        *bestPath = fp;
-                        *bestScore = score;
-                        *bestSize = sz;
-                    }
-                }
-            }
-        } @catch (...) {}
-    }
-}
-
-// ============================================================
-@implementation ELKFileExporter
-
-+ (void)takeBeforeSnapshot {
-    g_beforeSnapshot = [NSMutableSet set];
+// ── 扫描所有文件（后台调用） ──
+static NSArray *listAllFiles(void) {
+    NSMutableArray *files = [NSMutableArray array];
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *root in scanRoots()) {
         @try {
@@ -131,47 +35,157 @@ static void scanRootsForBest(NSArray *roots, NSString **bestPath, int *bestScore
                 @autoreleasepool {
                     NSString *fp = [root stringByAppendingPathComponent:rp];
                     NSDictionary *a = [fm attributesOfItemAtPath:fp error:nil];
-                    if (a && ![a[NSFileType] isEqualToString:NSFileTypeDirectory]) {
-                        [g_beforeSnapshot addObject:[NSString stringWithFormat:@"%@|%@", fp, a[NSFileSize]]];
-                    }
+                    if (!a || [a[NSFileType] isEqualToString:NSFileTypeDirectory]) continue;
+                    unsigned long long sz = [a[NSFileSize] unsignedLongLongValue];
+                    if (sz < 100) continue;
+                    // 存入 path + size + date
+                    [files addObject:@{@"path":fp, @"size":@(sz), @"date":a[NSFileModificationDate] ?: [NSDate distantPast]}];
                 }
             }
         } @catch (...) {}
     }
+    // 按修改时间倒序
+    [files sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"date"] compare:a[@"date"]];
+    }];
+    return files;
 }
 
-+ (void)findNewFilesAfterSnapshot {
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *bestPath = nil;
-        int bestScore = 0;
-        unsigned long long bestSize = 0;
-        scanRootsForBest(scanRoots(), &bestPath, &bestScore, &bestSize, g_beforeSnapshot);
+// ============================================================
+//  文件浏览器 VC
+// ============================================================
+@interface FileBrowserVC : UIViewController <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSArray *allFiles;       // dict array
+@property (nonatomic, strong) NSArray *filteredFiles;   // dict array
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) UISearchBar *search;
+@end
 
-        if (bestPath) {
-            NSLog(@"[喵喵] 🆕 %@ (%llu KB, score=%d)", [bestPath lastPathComponent], bestSize/1024, bestScore);
-            g_cachedFile = bestPath;
-        } else {
-            // 没找到新增文件 → 全局搜索含 Decript 的文件（不需要新增也能导出）
-            NSLog(@"[喵喵] 🔍 新增检测未命中，全局搜索 Decript...");
-            NSString *fallback = nil;
-            int fallbackScore = 0;
-            unsigned long long fallbackSize = 0;
-            scanRootsForBest(scanRoots(), &fallback, &fallbackScore, &fallbackSize, nil);
-            if (fallback) {
-                NSLog(@"[喵喵] 📁 全局: %@ (%llu KB, score=%d)", [fallback lastPathComponent], fallbackSize/1024, fallbackScore);
-                g_cachedFile = fallback;
-            }
-        }
-        g_beforeSnapshot = nil;
-    });
-}
+@implementation FileBrowserVC
 
-+ (NSString *)cachedFile {
-    if (g_cachedFile && [[NSFileManager defaultManager] fileExistsAtPath:g_cachedFile]) {
-        return g_cachedFile;
+- (instancetype)initWithFiles:(NSArray *)files {
+    if (self = [super init]) {
+        _allFiles = files;
+        _filteredFiles = files;
     }
-    g_cachedFile = nil;
-    return nil;
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"选择文件导出";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+
+    // 关闭按钮
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"关闭" style:UIBarButtonItemStyleDone target:self action:@selector(close)];
+
+    // 搜索框
+    self.search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 44)];
+    self.search.placeholder = @"输入文件名关键词搜索...";
+    self.search.delegate = self;
+    self.search.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.search.autocorrectionType = UITextAutocorrectionTypeNo;
+
+    // 表格
+    self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 50;
+    [self.table registerClass:[UITableViewCell class] forCellReuseIdentifier:@"c"];
+
+    [self.view addSubview:self.search];
+    [self.view addSubview:self.table];
+
+    // layout
+    self.search.translatesAutoresizingMaskIntoConstraints = NO;
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.search.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.search.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.search.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.table.topAnchor constraintEqualToAnchor:self.search.bottomAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
+}
+
+- (void)close {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+// ── Search ──
+- (void)searchBar:(UISearchBar *)bar textDidChange:(NSString *)text {
+    if (text.length == 0) {
+        self.filteredFiles = self.allFiles;
+    } else {
+        NSString *lower = [text lowercaseString];
+        NSPredicate *pred = [NSPredicate predicateWithBlock:^BOOL(NSDictionary *d, id _) {
+            return [[d[@"path"] lastPathComponent].lowercaseString containsString:lower];
+        }];
+        self.filteredFiles = [self.allFiles filteredArrayUsingPredicate:pred];
+    }
+    [self.table reloadData];
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)bar {
+    [bar resignFirstResponder];
+}
+
+// ── Table ──
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    return self.filteredFiles.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"c" forIndexPath:ip];
+    NSDictionary *d = self.filteredFiles[ip.row];
+    NSString *name = [[d[@"path"] lastPathComponent] copy];
+    unsigned long long sz = [d[@"size"] unsignedLongLongValue];
+
+    c.textLabel.text = name;
+    c.textLabel.font = [UIFont systemFontOfSize:15];
+    c.textLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+
+    // 文件大小
+    NSString *sizeStr;
+    if (sz > 1048576) sizeStr = [NSString stringWithFormat:@"%.1f MB", sz / 1048576.0];
+    else if (sz > 1024) sizeStr = [NSString stringWithFormat:@"%llu KB", sz / 1024];
+    else sizeStr = [NSString stringWithFormat:@"%llu B", sz];
+    c.detailTextLabel.text = sizeStr;
+    c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+
+    return c;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    NSDictionary *d = self.filteredFiles[ip.row];
+    NSString *path = d[@"path"];
+    [self dismissViewControllerAnimated:YES completion:^{
+        [ELKFileExporter shareFileAtPath:path];
+    }];
+}
+
+@end
+
+// ============================================================
+@implementation ELKFileExporter
+
++ (void)presentFileBrowser {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray *files = listAllFiles();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            FileBrowserVC *vc = [[FileBrowserVC alloc] initWithFiles:files];
+            UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+            nav.modalPresentationStyle = UIModalPresentationFullScreen;
+            UIViewController *top = [ELKRuntimeHelper topViewController];
+            if (top) {
+                [top presentViewController:nav animated:YES completion:nil];
+            }
+        });
+    });
 }
 
 + (void)shareFileAtPath:(NSString *)filePath {
