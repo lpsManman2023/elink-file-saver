@@ -1,6 +1,6 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - v14 文件浏览器
+//  ELKFileSaver - v17 全功能版
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
@@ -16,15 +16,11 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
     orig_pushVC(self, _cmd, vc, animated);
     @try {
         NSString *cn = NSStringFromClass([vc class]);
-
-        // 📤 在有导航栏的页面上加按钮（聊天页/文件传输页/预览页等）
-        // 只要不是系统页都加，让用户随时可以浏览文件
         BOOL shouldAdd = NO;
-        if ([cn hasPrefix:@"WWK"]) shouldAdd = YES;  // eLink 的所有页面
-        if ([cn hasPrefix:@"QL"]) shouldAdd = YES;   // QuickLook 预览
+        if ([cn hasPrefix:@"WWK"]) shouldAdd = YES;
+        if ([cn hasPrefix:@"QL"]) shouldAdd = YES;
         if (!shouldAdd) return;
 
-        NSLog(@"[喵喵] 🎯 页面: %@", cn);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [ELKMenuHook addButtonToVC:vc];
@@ -36,7 +32,7 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install v14 文件浏览器");
+        NSLog(@"[喵喵] 🚀 install v17");
         Method m = class_getInstanceMethod([UINavigationController class],
                                            @selector(pushViewController:animated:));
         if (m) {
@@ -49,17 +45,25 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 
 + (void)addButtonToVC:(UIViewController *)vc {
     if (!vc || !vc.navigationItem) return;
+
+    // 去重
     for (UIBarButtonItem *item in vc.navigationItem.rightBarButtonItems) {
-        if ([item.title isEqualToString:@"📤 导出"]) return;
+        if ([item.title hasPrefix:@"📤"]) return;
     }
+
+    // 🔥 角标显示文件数量
+    NSUInteger count = [ELKFileExporter cachedFileCount];
+    NSString *title = count > 0
+        ? [NSString stringWithFormat:@"📤 导出 (%lu)", (unsigned long)count]
+        : @"📤 导出";
+
     UIBarButtonItem *btn = [[UIBarButtonItem alloc]
-        initWithTitle:@"📤 导出" style:UIBarButtonItemStylePlain
+        initWithTitle:title style:UIBarButtonItemStylePlain
         target:self action:@selector(onExportTap)];
     NSMutableArray *items = vc.navigationItem.rightBarButtonItems
         ? [vc.navigationItem.rightBarButtonItems mutableCopy] : [NSMutableArray array];
     [items addObject:btn];
     vc.navigationItem.rightBarButtonItems = items;
-    NSLog(@"[喵喵] ✅ 📤 按钮已添加");
 }
 
 + (void)onExportTap {

@@ -1,8 +1,9 @@
 //
 //  entry.m
-//  ELKFileSaver - 喵喵插件 v16 美化版
+//  ELKFileSaver - 喵喵插件 v17 全功能版
 //
 #import "ELKMenuHook.h"
+#import "ELKFileExporter.h"
 #import <UIKit/UIKit.h>
 
 // ── 随机温馨提示（20条） ──
@@ -32,24 +33,39 @@ static NSString *randomTip(void) {
     return tips[arc4random_uniform((uint32_t)tips.count)];
 }
 
+// ── 时间段问候 ──
+static NSString *timeGreeting(void) {
+    NSDateComponents *c = [[NSCalendar currentCalendar] components:NSCalendarUnitHour fromDate:[NSDate date]];
+    NSInteger h = c.hour;
+    if (h >= 6  && h < 12) return @"早上好喵～ ☀️";
+    if (h >= 12 && h < 18) return @"下午好喵～ 🌤️";
+    if (h >= 18 && h < 22) return @"晚上好喵～ 🌙";
+    return @"夜深了喵～ 🌙";
+}
+
 __attribute__((constructor))
 static void ELKFileSaverInit(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        NSLog(@"[喵喵] 🚀 v16 美化版");
+        NSLog(@"[喵喵] 🚀 v17 全功能版");
         [ELKMenuHook install];
+
+        // 后台预加载文件列表（更新按钮角标）
+        [ELKFileExporter preloadFileList];
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if ([[NSUserDefaults standardUserDefaults] boolForKey:@"meow_silent"]) return;
+            // ── 一天内静音检测 ──
+            NSTimeInterval last = [[NSUserDefaults standardUserDefaults] doubleForKey:@"meow_last_dismiss"];
+            if ([[NSDate date] timeIntervalSince1970] - last < 86400) return;
 
             UIAlertController *a = [UIAlertController
-                alertControllerWithTitle:@"🐱 喵喵插件"
-                message:[NSString stringWithFormat:@"%@\n\n✅ 注入成功！\n右上角「📤 导出」→ 浏览文件", randomTip()]
+                alertControllerWithTitle:@"🐱 喵喵插件 v17"
+                message:[NSString stringWithFormat:@"%@\n\n━━━━━━━━━━━━━━━━\n%@\n━━━━━━━━━━━━━━━━\n✅ 注入成功！\n右上角「📤 导出」→ 浏览文件", timeGreeting(), randomTip()]
                 preferredStyle:UIAlertControllerStyleAlert];
             [a addAction:[UIAlertAction actionWithTitle:@"喵～" style:UIAlertActionStyleDefault handler:nil]];
-            [a addAction:[UIAlertAction actionWithTitle:@"不再提示" style:UIAlertActionStyleCancel handler:^(UIAlertAction *_) {
-                [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"meow_silent"];
+            [a addAction:[UIAlertAction actionWithTitle:@"一天内别说了 🐱" style:UIAlertActionStyleCancel handler:^(UIAlertAction *_) {
+                [[NSUserDefaults standardUserDefaults] setDouble:[[NSDate date] timeIntervalSince1970] forKey:@"meow_last_dismiss"];
             }]];
 
             for (UIWindow *w in [UIApplication sharedApplication].windows) {

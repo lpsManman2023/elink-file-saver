@@ -27,6 +27,7 @@ CFLAGS     = -arch $(ARCH) \
 LDFLAGS    = -framework Foundation \
              -framework UIKit \
              -framework UniformTypeIdentifiers \
+             -framework QuickLook \
              -lobjc
 
 .PHONY: all clean
