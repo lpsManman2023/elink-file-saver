@@ -177,7 +177,7 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
             }];
         }
 
-        [self collectCandidatesFrom:sub window:win candidates:out seenClasses:seen];
+        [self collectCandidatesFrom:sub window:win candidates:out seenClasses:seenClasses];
     }
 }
 
