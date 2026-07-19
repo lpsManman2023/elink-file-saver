@@ -1,6 +1,6 @@
 //
 //  ELKFileExporter.h
-//  ELKFileSaver - v19 水印精准击杀
+//  ELKFileSaver - v22
 //
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -9,6 +9,7 @@
 
 + (void)presentFileBrowser;
 + (void)presentSettings;
++ (void)presentWatermarkMarker:(UIViewController *)top candidates:(NSArray *)candidates;
 + (void)shareFileAtPath:(NSString *)filePath;
 + (void)shareFilesAtPaths:(NSArray *)paths;
 + (void)showAlertWithTitle:(NSString *)title message:(NSString *)message;

@@ -1,6 +1,6 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - v21 浮动按钮版
+//  ELKFileSaver - v22 隐藏菜单版
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
@@ -8,19 +8,31 @@
 
 static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
 static NSMutableSet *g_markedViews = nil;
-static UIButton *g_floatBtn = nil;
 
-// ── 规则文件 ──
+// ── 预置水印类名（首次自动创建规则文件） ──
+static NSArray *presetWatermarkClasses(void) {
+    return @[@"WWKWatermarkView", @"WWKWatermarkImageView",
+             @"WWKWatermarkHelper", @"WWKWaterMark"];
+}
+
 static NSString *rulesPath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/meow_watermark_rules.json"];
 }
+
 static NSArray *loadWatermarkClasses(void) {
     NSData *d = [NSData dataWithContentsOfFile:rulesPath()];
-    if (!d) return @[];
-    @try {
-        NSDictionary *r = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
-        return r[@"watermark_classes"] ?: @[];
-    } @catch (...) { return @[]; }
+    if (d) {
+        @try {
+            NSDictionary *r = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+            NSArray *names = r[@"watermark_classes"];
+            if (names.count > 0) return names;
+        } @catch (...) {}
+    }
+    // 首次 → 自动写入预置规则
+    NSData *jd = [NSJSONSerialization dataWithJSONObject:@{@"watermark_classes":presetWatermarkClasses(), @"version":@1}
+                                                 options:NSJSONWritingPrettyPrinted error:nil];
+    [jd writeToFile:rulesPath() atomically:YES];
+    return presetWatermarkClasses();
 }
 
 // ── 按类名精准隐藏 ──
@@ -37,35 +49,107 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
     orig_pushVC(self, _cmd, vc, animated);
     @try {
         NSString *cn = NSStringFromClass([vc class]);
-        BOOL isWWK = [cn hasPrefix:@"WWK"];
-        BOOL isQL  = [cn hasPrefix:@"QL"];
+        if (![cn hasPrefix:@"WWK"]) return;
 
-        if (isWWK) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (!g_floatBtn.hidden) return;
-                g_floatBtn.hidden = NO;
-                [g_floatBtn.superview bringSubviewToFront:g_floatBtn];
-            });
-            if ([[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"]) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{
-                    [ELKMenuHook hideWatermarksIfEnabled];
-                });
-            }
-        } else if (isQL) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                g_floatBtn.hidden = YES;
+        // 加水印隐藏
+        if ([[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [ELKMenuHook hideWatermarksIfEnabled];
             });
         }
+
+        // 加隐藏菜单手势（长按导航栏标题区域 1.5 秒）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [ELKMenuHook installNavGesture:vc];
+        });
     } @catch (...) {}
 }
+
+// ── 手势 handler ──
+@interface ELKNavGestureHandler : NSObject <UIGestureRecognizerDelegate>
+@end
+@implementation ELKNavGestureHandler
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gr {
+    if (gr.state != UIGestureRecognizerStateBegan) return;
+    UIView *navBar = gr.view;
+    CGPoint p = [gr locationInView:navBar];
+
+    // 只在标题区域（中间 1/3）响应
+    CGFloat left = navBar.bounds.size.width * 0.33;
+    CGFloat right = navBar.bounds.size.width * 0.67;
+    if (p.x < left || p.x > right) return;
+
+    NSLog(@"[喵喵] 🔔 隐藏菜单触发");
+
+    BOOL wmOn = [[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"];
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"🐱 喵喵工具箱"
+        message:nil
+        preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"📁 文件浏览器"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
+            [ELKFileExporter preloadFileList];
+            [ELKFileExporter presentFileBrowser];
+        }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:wmOn ? @"🔓 显示水印" : @"🔒 隐藏水印"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
+            BOOL newVal = !wmOn;
+            [[NSUserDefaults standardUserDefaults] setBool:newVal forKey:@"meow_watermark_hidden"];
+            if (newVal) [ELKMenuHook hideWatermarksIfEnabled];
+            else [ELKMenuHook showAllWatermarks];
+        }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"🕵️ 标记水印视图"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *_) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                UIViewController *top = nil;
+                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                    UIViewController *r = w.rootViewController;
+                    while (r.presentedViewController) r = r.presentedViewController;
+                    if (r) { top = r; break; }
+                }
+                NSArray *candidates = [ELKMenuHook scanCandidateWatermarkViews];
+                // WatermarkCandidateVC is in ELKFileExporter.m - use presentSettings+special flow
+                [ELKFileExporter presentWatermarkMarker:top candidates:candidates];
+            });
+        }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
+        style:UIAlertActionStyleCancel handler:nil]];
+
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = navBar;
+        sheet.popoverPresentationController.sourceRect = (CGRect){{navBar.bounds.size.width/2, navBar.bounds.size.height}, {0,0}};
+    }
+    UIViewController *top = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        UIViewController *r = w.rootViewController;
+        while (r.presentedViewController) r = r.presentedViewController;
+        if (r) { top = r; break; }
+    }
+    if (top) [top presentViewController:sheet animated:YES completion:nil];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return YES;
+}
+@end
+
+static ELKNavGestureHandler *g_gestureHandler = nil;
 
 @implementation ELKMenuHook
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install v21");
+        NSLog(@"[喵喵] 🚀 install v22");
         g_markedViews = [NSMutableSet set];
+        g_gestureHandler = [[ELKNavGestureHandler alloc] init];
 
         Method m = class_getInstanceMethod([UINavigationController class],
                                            @selector(pushViewController:animated:));
@@ -75,10 +159,8 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
             NSLog(@"[喵喵] ✅ 已安装");
         }
 
-        // 启动时水印+浮窗
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [self setupFloatButton];
             if ([[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"]) {
                 [self hideWatermarksIfEnabled];
             }
@@ -86,52 +168,34 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
     } @catch (NSException *e) {}
 }
 
-// ── 右下浮动 📤 按钮 ──
-+ (void)setupFloatButton {
-    if (g_floatBtn) return;
-    g_floatBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    CGFloat s = 54;
-    g_floatBtn.frame = (CGRect){{0,0},{s,s}};
-    g_floatBtn.layer.cornerRadius = s / 2;
-    g_floatBtn.backgroundColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.85];
-    g_floatBtn.titleLabel.font = [UIFont systemFontOfSize:24];
-    [g_floatBtn setTitle:@"📤" forState:UIControlStateNormal];
-    g_floatBtn.tintColor = [UIColor whiteColor];
-    g_floatBtn.hidden = YES;
-    g_floatBtn.layer.shadowColor = [UIColor blackColor].CGColor;
-    g_floatBtn.layer.shadowOffset = (CGSize){2,4};
-    g_floatBtn.layer.shadowRadius = 6;
-    g_floatBtn.layer.shadowOpacity = 0.3;
-    [g_floatBtn addTarget:self action:@selector(onFloatTap) forControlEvents:UIControlEventTouchUpInside];
+// ── 给导航栏加长按手势 ──
++ (void)installNavGesture:(UIViewController *)vc {
+    UINavigationBar *bar = vc.navigationController.navigationBar;
+    if (!bar) return;
 
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.rootViewController && !w.hidden && w.bounds.size.width > 100) {
-            CGFloat x = w.bounds.size.width - s - 16;
-            CGFloat y = w.bounds.size.height - w.safeAreaInsets.bottom - s - 88;
-            g_floatBtn.frame = (CGRect){{x, y},{s, s}};
-            [w addSubview:g_floatBtn];
-            NSLog(@"[喵喵] ✅ 浮动按钮已放置 (%.0f,%.0f)", x, y);
-            break;
-        }
+    // 去重
+    for (UIGestureRecognizer *gr in bar.gestureRecognizers) {
+        if ([gr.delegate isKindOfClass:[ELKNavGestureHandler class]]) return;
     }
-}
 
-+ (void)onFloatTap {
-    [ELKFileExporter preloadFileList];
-    [ELKFileExporter presentFileBrowser];
+    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:g_gestureHandler action:@selector(handleLongPress:)];
+    lp.minimumPressDuration = 1.5;
+    lp.cancelsTouchesInView = NO;
+    lp.delegate = g_gestureHandler;
+    [bar addGestureRecognizer:lp];
+    NSLog(@"[喵喵] ✅ 隐藏菜单已就绪 (长按标题1.5秒)");
 }
 
 // ── 水印控制 ──
 + (void)hideWatermarksIfEnabled {
     if (![[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"]) return;
     NSArray *names = loadWatermarkClasses();
-    if (names.count == 0) return;
     [g_markedViews removeAllObjects];
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         hideByClassName(w, names, g_markedViews);
     }
-    NSLog(@"[喵喵] 🔒 %lu 个水印 (类名:%@)", (unsigned long)g_markedViews.count,
-          [names componentsJoinedByString:@","]);
+    NSLog(@"[喵喵] 🔒 %lu 个水印", (unsigned long)g_markedViews.count);
 }
 
 + (void)hideWatermarksByClassName:(NSString *)className {

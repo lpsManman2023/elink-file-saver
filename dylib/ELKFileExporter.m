@@ -763,6 +763,15 @@ static NSString *shortDate(NSDate *d) {
     });
 }
 
++ (void)presentWatermarkMarker:(UIViewController *)top candidates:(NSArray *)candidates {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WatermarkCandidateVC *vc = [[WatermarkCandidateVC alloc] initWithCandidates:candidates];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.modalPresentationStyle = UIModalPresentationFullScreen;
+        [top presentViewController:nav animated:YES completion:nil];
+    });
+}
+
 + (void)presentFileBrowser {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSArray *files = listAllFiles(NO);
