@@ -721,11 +721,21 @@ static NSString *shortDate(NSDate *d) {
 }
 
 - (void)openWatermarkMarker {
-    NSArray *candidates = [ELKMenuHook scanCandidateWatermarkViews];
-    WatermarkCandidateVC *vc = [[WatermarkCandidateVC alloc] initWithCandidates:candidates];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.modalPresentationStyle = UIModalPresentationFullScreen;
-    [self presentViewController:nav animated:YES completion:nil];
+    // 🔥 先关闭设置页和文件浏览器，回到聊天页面（水印在此可见），再扫描
+    UIViewController *fileBrowserNav = self.presentingViewController;
+    [self dismissViewControllerAnimated:YES completion:^{
+        [fileBrowserNav dismissViewControllerAnimated:NO completion:^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                UIViewController *top = [ELKRuntimeHelper topViewController];
+                NSArray *candidates = [ELKMenuHook scanCandidateWatermarkViews];
+                WatermarkCandidateVC *vc = [[WatermarkCandidateVC alloc] initWithCandidates:candidates];
+                UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+                nav.modalPresentationStyle = UIModalPresentationFullScreen;
+                [top presentViewController:nav animated:YES completion:nil];
+            });
+        }];
+    }];
 }
 
 @end
