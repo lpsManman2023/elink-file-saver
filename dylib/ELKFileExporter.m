@@ -521,6 +521,126 @@ static NSString *shortDate(NSDate *d) {
 @end
 
 // ============================================================
+//  水印候选列表 VC
+// ============================================================
+@interface WatermarkCandidateVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSArray *candidates;
+@property (nonatomic, strong) UITableView *table;
+@end
+
+@implementation WatermarkCandidateVC
+
+- (instancetype)initWithCandidates:(NSArray *)candidates {
+    if (self = [super init]) {
+        _candidates = candidates;
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"🕵️ 候选水印视图";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"✕" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
+
+    self.table = [[UITableView alloc] initWithFrame:(CGRect){{0,0},{0,0}} style:UITableViewStylePlain];
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.rowHeight = 90;
+    [self.table registerClass:[UITableViewCell class] forCellReuseIdentifier:@"c"];
+    [self.view addSubview:self.table];
+
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
+}
+
+- (void)close {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    return self.candidates.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"c" forIndexPath:ip];
+    NSDictionary *d = self.candidates[ip.row];
+
+    // 清理旧 subviews
+    for (UIView *sv in c.contentView.subviews) {
+        if ([sv isKindOfClass:[UIButton class]] || sv.tag == 999) [sv removeFromSuperview];
+    }
+
+    NSString *cn = d[@"className"];
+    CGFloat fw = [d[@"frameW"] floatValue];
+    CGFloat fh = [d[@"frameH"] floatValue];
+    float alpha = [d[@"alpha"] floatValue];
+
+    c.textLabel.text = cn;
+    c.textLabel.font = [UIFont boldSystemFontOfSize:15];
+    c.textLabel.numberOfLines = 1;
+
+    c.detailTextLabel.text = [NSString stringWithFormat:@"%.0f×%.0f  alpha=%.2f", fw, fh, alpha];
+    c.detailTextLabel.textColor = [UIColor grayColor];
+    c.detailTextLabel.font = [UIFont systemFontOfSize:12];
+
+    // 检查是否已标记
+    BOOL alreadySaved = [[ELKMenuHook savedWatermarkClasses] containsObject:cn];
+
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [btn setTitle:alreadySaved ? @"✅ 已标记" : @"👆 标记为水印" forState:UIControlStateNormal];
+    btn.titleLabel.font = [UIFont systemFontOfSize:14];
+    btn.tag = ip.row;
+    btn.enabled = !alreadySaved;
+    [btn addTarget:self action:@selector(onMark:) forControlEvents:UIControlEventTouchUpInside];
+    [btn sizeToFit];
+    btn.frame = (CGRect){{c.contentView.bounds.size.width - btn.bounds.size.width - 20,
+                           (90 - btn.bounds.size.height) / 2},
+                          btn.bounds.size};
+    btn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    btn.tag = 999;
+    [c.contentView addSubview:btn];
+
+    c.accessoryType = alreadySaved ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+
+    return c;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    [self onMarkAtIndex:ip.row];
+}
+
+- (void)onMark:(UIButton *)sender {
+    [self onMarkAtIndex:sender.tag];
+}
+
+- (void)onMarkAtIndex:(NSInteger)idx {
+    if (idx < 0 || idx >= (NSInteger)self.candidates.count) return;
+    NSString *cn = self.candidates[idx][@"className"];
+
+    // 保存规则
+    [ELKMenuHook addWatermarkClass:cn];
+
+    // 如果水印开关开着，立即隐藏
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"]) {
+        [ELKMenuHook hideWatermarksByClassName:cn];
+    }
+
+    // 刷新列表
+    [self.table reloadData];
+}
+
+@end
+
+// ============================================================
 //  设置页 VC
 // ============================================================
 @interface SettingsVC : UIViewController
@@ -537,24 +657,54 @@ static NSString *shortDate(NSDate *d) {
         initWithTitle:@"✕" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
 
     CGFloat w = self.view.bounds.size.width;
+    CGFloat y = 100;
 
     // ── 水印开关 ──
-    UILabel *wmLbl = [[UILabel alloc] initWithFrame:(CGRect){{16,100},{w-32,22}}];
+    UILabel *wmLbl = [[UILabel alloc] initWithFrame:(CGRect){{16,y},{w-80,22}}];
     wmLbl.text = @"🔒 去水印";
     wmLbl.font = [UIFont systemFontOfSize:16];
     [self.view addSubview:wmLbl];
 
-    UILabel *wmDesc = [[UILabel alloc] initWithFrame:(CGRect){{16,124},{w-32,40}}];
-    wmDesc.text = @"搜索包含「耿娟」「6789」的半透明覆盖视图并隐藏；\n未命中时走视觉特征兜底（全屏+半透明+无交互）。";
-    wmDesc.font = [UIFont systemFontOfSize:11];
-    wmDesc.textColor = [UIColor grayColor];
-    wmDesc.numberOfLines = 3;
-    [self.view addSubview:wmDesc];
-
-    UISwitch *sw = [[UISwitch alloc] initWithFrame:(CGRect){{w - 67, 95},{0,0}}];
+    UISwitch *sw = [[UISwitch alloc] initWithFrame:(CGRect){{w - 67, y - 3},{0,0}}];
     sw.on = [[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"];
     [sw addTarget:self action:@selector(onWatermarkToggle:) forControlEvents:UIControlEventValueChanged];
     [self.view addSubview:sw];
+
+    y += 30;
+
+    // 已标记类名
+    NSArray *saved = [ELKMenuHook savedWatermarkClasses];
+    UILabel *desc = [[UILabel alloc] initWithFrame:(CGRect){{16,y},{w-32,30}}];
+    desc.text = saved.count > 0
+        ? [NSString stringWithFormat:@"已标记: %@", [saved componentsJoinedByString:@", "]]
+        : @"尚未标记水印视图（点下方按钮）";
+    desc.font = [UIFont systemFontOfSize:11];
+    desc.textColor = [UIColor grayColor];
+    desc.numberOfLines = 2;
+    [self.view addSubview:desc];
+
+    y += 40;
+
+    // ── 标记水印按钮 ──
+    UIButton *markBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    markBtn.frame = (CGRect){{16, y},{w - 32, 44}};
+    [markBtn setTitle:@"🕵️ 标记当前页面水印 →" forState:UIControlStateNormal];
+    markBtn.titleLabel.font = [UIFont systemFontOfSize:15];
+    markBtn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    markBtn.titleEdgeInsets = (UIEdgeInsets){0, 12, 0, 0};
+    markBtn.backgroundColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.1];
+    markBtn.layer.cornerRadius = 10;
+    [markBtn addTarget:self action:@selector(openWatermarkMarker) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:markBtn];
+
+    y += 52;
+
+    UILabel *markDesc = [[UILabel alloc] initWithFrame:(CGRect){{16,y},{w-32,40}}];
+    markDesc.text = @"扫描当前页面所有视图，筛选符合条件的候选\n（全屏/半透明/无交互），选择并标记水印类名。";
+    markDesc.font = [UIFont systemFontOfSize:11];
+    markDesc.textColor = [UIColor grayColor];
+    markDesc.numberOfLines = 3;
+    [self.view addSubview:markDesc];
 }
 
 - (void)close {
@@ -568,6 +718,14 @@ static NSString *shortDate(NSDate *d) {
     } else {
         [ELKMenuHook showAllWatermarks];
     }
+}
+
+- (void)openWatermarkMarker {
+    NSArray *candidates = [ELKMenuHook scanCandidateWatermarkViews];
+    WatermarkCandidateVC *vc = [[WatermarkCandidateVC alloc] initWithCandidates:candidates];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 @end

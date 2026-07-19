@@ -1,6 +1,6 @@
 //
 //  ELKMenuHook.m
-//  ELKFileSaver - v19 水印精准击杀
+//  ELKFileSaver - v20 水印标记训练版
 //
 #import "ELKMenuHook.h"
 #import "ELKFileExporter.h"
@@ -13,32 +13,33 @@
 static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
 static NSMutableSet *g_markedViews = nil;
 
-// ── 水印隐藏逻辑 ──
-static void scanAndApply(UIView *root) {
+// ── 读取水印规则文件 ──
+static NSString *rulesPath(void) {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/meow_watermark_rules.json"];
+}
+
+static NSArray *loadWatermarkClasses(void) {
+    NSData *d = [NSData dataWithContentsOfFile:rulesPath()];
+    if (!d) return @[];
+    @try {
+        NSDictionary *rules = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+        return rules[@"watermark_classes"] ?: @[];
+    } @catch (...) { return @[]; }
+}
+
+// ── 按类名精准隐藏 ──
+static void hideByClassName(UIView *root, NSArray *classNames, NSMutableSet *marked) {
+    NSString *cn = NSStringFromClass([root class]);
+    if ([classNames containsObject:cn]) {
+        root.hidden = YES;
+        [marked addObject:[NSValue valueWithNonretainedObject:root]];
+    }
     for (UIView *sub in root.subviews) {
-        // 策略1: 搜索子视图中的 UILabel 含目标文字
-        for (UIView *child in sub.subviews) {
-            if ([child isKindOfClass:[UILabel class]]) {
-                NSString *t = ((UILabel *)child).text ?: @"";
-                if ([t containsString:@"耿娟"] || [t containsString:@"6789"]) {
-                    sub.hidden = YES;
-                    [g_markedViews addObject:[NSValue valueWithNonretainedObject:sub]];
-                    break;
-                }
-            }
-        }
-        // 策略2 兜底: 全屏半透明无交互
-        if (!sub.hidden && sub.alpha > 0.05 && sub.alpha < 0.65 &&
-            !sub.userInteractionEnabled &&
-            sub.frame.size.width >= root.bounds.size.width * 0.65) {
-            sub.hidden = YES;
-            [g_markedViews addObject:[NSValue valueWithNonretainedObject:sub]];
-        }
-        // 继续递归
-        scanAndApply(sub);
+        hideByClassName(sub, classNames, marked);
     }
 }
 
+// ── Hook pushVC ──
 static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) {
     orig_pushVC(self, _cmd, vc, animated);
     @try {
@@ -53,7 +54,7 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
             [ELKMenuHook addButtonsToVC:vc];
         });
 
-        // 水印开关开着 → 自动隐藏
+        // 水印开关开着 → 按类名自动隐藏
         if ([[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -67,7 +68,7 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 
 + (void)install {
     @try {
-        NSLog(@"[喵喵] 🚀 install v19");
+        NSLog(@"[喵喵] 🚀 install v20");
         g_markedViews = [NSMutableSet set];
 
         Method m = class_getInstanceMethod([UINavigationController class],
@@ -90,7 +91,6 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 + (void)addButtonsToVC:(UIViewController *)vc {
     if (!vc || !vc.navigationItem) return;
 
-    // 导出按钮（右侧）
     for (UIBarButtonItem *item in vc.navigationItem.rightBarButtonItems) {
         if ([item.title hasPrefix:@"📤"]) return;
     }
@@ -111,12 +111,24 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
     [ELKFileExporter presentFileBrowser];
 }
 
-// ── 水印控制（由设置页调用） ──
+// ── 水印控制（类名精准匹配） ──
 + (void)hideWatermarksIfEnabled {
     if (![[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"]) return;
+    NSArray *names = loadWatermarkClasses();
+    if (names.count == 0) return;
+
+    [g_markedViews removeAllObjects];
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        scanAndApply(w);
+        hideByClassName(w, names, g_markedViews);
     }
+    NSLog(@"[喵喵] 🔒 已隐藏 %lu 个水印 (类名:%@)", (unsigned long)g_markedViews.count, [names componentsJoinedByString:@","]);
+}
+
++ (void)hideWatermarksByClassName:(NSString *)className {
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        hideByClassName(w, @[className], g_markedViews);
+    }
+    NSLog(@"[喵喵] 🔒 按类名隐藏: %@", className);
 }
 
 + (void)showAllWatermarks {
@@ -125,6 +137,72 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
         if (v) v.hidden = NO;
     }
     [g_markedViews removeAllObjects];
+    NSLog(@"[喵喵] 🔓 水印已恢复");
+}
+
+// ── 扫描候选水印视图（供标记页使用） ──
++ (NSArray *)scanCandidateWatermarkViews {
+    NSMutableArray *candidates = [NSMutableArray array];
+    NSMutableSet *seenClasses = [NSMutableSet set];
+
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        [self collectCandidatesFrom:w window:w candidates:candidates seenClasses:seenClasses];
+    }
+
+    // 按覆盖率降序
+    [candidates sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"coverRatio"] compare:a[@"coverRatio"]];
+    }];
+    return candidates;
+}
+
++ (void)collectCandidatesFrom:(UIView *)view window:(UIWindow *)win
+                   candidates:(NSMutableArray *)out seenClasses:(NSMutableSet *)seen {
+    for (UIView *sub in view.subviews) {
+        NSString *cn = NSStringFromClass([sub class]);
+        if ([seenClasses containsObject:cn]) continue;
+
+        CGFloat coverW = sub.frame.size.width / (win.bounds.size.width ?: 1);
+        CGFloat coverH = sub.frame.size.height / (win.bounds.size.height ?: 1);
+
+        // 水印特征：覆盖 ≥60% 屏幕 + 有透明度 + 不拦截触摸
+        if (coverW >= 0.6 && coverH >= 0.5 && sub.alpha < 0.999 && !sub.userInteractionEnabled) {
+            [seenClasses addObject:cn];
+            [out addObject:@{
+                @"className": cn,
+                @"frameW": @(sub.frame.size.width),
+                @"frameH": @(sub.frame.size.height),
+                @"alpha": @(sub.alpha),
+                @"coverRatio": @(coverW),
+            }];
+        }
+
+        [self collectCandidatesFrom:sub window:win candidates:out seenClasses:seen];
+    }
+}
+
+// ── 规则文件操作 ──
++ (NSArray *)savedWatermarkClasses {
+    return loadWatermarkClasses();
+}
+
++ (void)addWatermarkClass:(NSString *)className {
+    NSMutableArray *names = [loadWatermarkClasses() mutableCopy];
+    if ([names containsObject:className]) return;
+    [names addObject:className];
+
+    NSDictionary *rules = @{@"watermark_classes": names, @"version": @1};
+    NSData *d = [NSJSONSerialization dataWithJSONObject:rules options:NSJSONWritingPrettyPrinted error:nil];
+    [d writeToFile:rulesPath() atomically:YES];
+    NSLog(@"[喵喵] ✅ 已保存规则: %@", className);
+}
+
++ (void)removeWatermarkClass:(NSString *)className {
+    NSMutableArray *names = [loadWatermarkClasses() mutableCopy];
+    [names removeObject:className];
+    NSDictionary *rules = @{@"watermark_classes": names, @"version": @1};
+    NSData *d = [NSJSONSerialization dataWithJSONObject:rules options:NSJSONWritingPrettyPrinted error:nil];
+    [d writeToFile:rulesPath() atomically:YES];
 }
 
 @end
