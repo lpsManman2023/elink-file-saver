@@ -1,13 +1,14 @@
 //
 //  ELKMenuHook.h
-//  ELKFileSaver - 消息菜单注入
+//  ELKFileSaver - v19
 //
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
 @interface ELKMenuHook : NSObject
 
-/// 安装所有 Hook（在 constructor 中调用）
 + (void)install;
++ (void)hideWatermarksIfEnabled;
++ (void)showAllWatermarks;
 
 @end

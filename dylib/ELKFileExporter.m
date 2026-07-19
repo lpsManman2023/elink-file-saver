@@ -3,6 +3,7 @@
 //  ELKFileSaver - v17 全功能版
 //
 #import "ELKFileExporter.h"
+#import "ELKMenuHook.h"
 #import "ELKRuntimeHelper.h"
 #import <QuickLook/QuickLook.h>
 
@@ -173,9 +174,12 @@ static NSString *shortDate(NSDate *d) {
 
     // 左按钮：选择/取消
     [self updateLeftButton];
-    // 右按钮：✕ 关闭
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+    // 右按钮：⚙️ 设置 + ✕ 关闭
+    UIBarButtonItem *settingsBtn = [[UIBarButtonItem alloc]
+        initWithTitle:@"⚙️" style:UIBarButtonItemStylePlain target:self action:@selector(openSettings)];
+    UIBarButtonItem *closeBtn = [[UIBarButtonItem alloc]
         initWithTitle:@"✕" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
+    self.navigationItem.rightBarButtonItems = @[closeBtn, settingsBtn];
 
     // 搜索框
     self.search = [[UISearchBar alloc] initWithFrame:(CGRect){{0,0},{self.view.bounds.size.width,44}}];
@@ -453,6 +457,10 @@ static NSString *shortDate(NSDate *d) {
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+- (void)openSettings {
+    [ELKFileExporter presentSettings];
+}
+
 // ── Table ──
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     return self.filteredFiles.count;
@@ -513,6 +521,58 @@ static NSString *shortDate(NSDate *d) {
 @end
 
 // ============================================================
+//  设置页 VC
+// ============================================================
+@interface SettingsVC : UIViewController
+@end
+
+@implementation SettingsVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"⚙️ 喵喵设置";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"✕" style:UIBarButtonItemStylePlain target:self action:@selector(close)];
+
+    CGFloat w = self.view.bounds.size.width;
+
+    // ── 水印开关 ──
+    UILabel *wmLbl = [[UILabel alloc] initWithFrame:(CGRect){{16,100},{w-32,22}}];
+    wmLbl.text = @"🔒 去水印";
+    wmLbl.font = [UIFont systemFontOfSize:16];
+    [self.view addSubview:wmLbl];
+
+    UILabel *wmDesc = [[UILabel alloc] initWithFrame:(CGRect){{16,124},{w-32,40}}];
+    wmDesc.text = @"搜索包含「耿娟」「6789」的半透明覆盖视图并隐藏；\n未命中时走视觉特征兜底（全屏+半透明+无交互）。";
+    wmDesc.font = [UIFont systemFontOfSize:11];
+    wmDesc.textColor = [UIColor grayColor];
+    wmDesc.numberOfLines = 3;
+    [self.view addSubview:wmDesc];
+
+    UISwitch *sw = [[UISwitch alloc] initWithFrame:(CGRect){{w - 67, 95},{0,0}}];
+    sw.on = [[NSUserDefaults standardUserDefaults] boolForKey:@"meow_watermark_hidden"];
+    [sw addTarget:self action:@selector(onWatermarkToggle:) forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:sw];
+}
+
+- (void)close {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)onWatermarkToggle:(UISwitch *)sw {
+    [[NSUserDefaults standardUserDefaults] setBool:sw.on forKey:@"meow_watermark_hidden"];
+    if (sw.on) {
+        [ELKMenuHook hideWatermarksIfEnabled];
+    } else {
+        [ELKMenuHook showAllWatermarks];
+    }
+}
+
+@end
+
+// ============================================================
 @implementation ELKFileExporter
 
 + (void)preloadFileList {
@@ -523,6 +583,16 @@ static NSString *shortDate(NSDate *d) {
 
 + (NSUInteger)cachedFileCount {
     return g_cachedCount;
+}
+
++ (void)presentSettings {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SettingsVC *vc = [[SettingsVC alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.modalPresentationStyle = UIModalPresentationFullScreen;
+        UIViewController *top = [ELKRuntimeHelper topViewController];
+        if (top) [top presentViewController:nav animated:YES completion:nil];
+    });
 }
 
 + (void)presentFileBrowser {
