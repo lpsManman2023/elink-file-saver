@@ -155,10 +155,6 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other 
 
 static ELKNavGestureHandler *g_gestureHandler = nil;
 
-@interface ELKMenuHook (Private)
-+ (void)installNavGesture:(UIViewController *)vc;
-@end
-
 @implementation ELKMenuHook
 
 + (void)install {
