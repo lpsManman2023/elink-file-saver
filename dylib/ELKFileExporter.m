@@ -311,7 +311,7 @@ static NSString *shortDate(NSDate *d) {
         x += b.bounds.size.width + 8;
         [self.catBar addSubview:b];
     }
-    self.catBar.contentSize = (CGSize){{x + 8, 38}};
+    self.catBar.contentSize = (CGSize){x + 8, 38};
 }
 
 - (void)onCatTap:(UIButton *)sender {

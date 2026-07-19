@@ -8,6 +8,7 @@
 
 @interface ELKMenuHook (Private)
 + (void)addButtonsToVC:(UIViewController *)vc;
++ (void)hideWatermarks;
 @end
 
 static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
