@@ -157,7 +157,7 @@ static void hook_pushVC(id self, SEL _cmd, UIViewController *vc, BOOL animated) 
 }
 
 + (void)collectCandidatesFrom:(UIView *)view window:(UIWindow *)win
-                   candidates:(NSMutableArray *)out seenClasses:(NSMutableSet *)seen {
+                   candidates:(NSMutableArray *)out seenClasses:(NSMutableSet *)seenClasses {
     for (UIView *sub in view.subviews) {
         NSString *cn = NSStringFromClass([sub class]);
         if ([seenClasses containsObject:cn]) continue;
