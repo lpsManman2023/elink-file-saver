@@ -9,6 +9,18 @@
 static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
 static NSMutableSet *g_markedViews = nil;
 
+// ── 前向声明（实现在 @implementation 内） ──
+@interface ELKMenuHook (Private)
++ (void)installNavGesture:(UIViewController *)vc;
++ (void)hideWatermarksIfEnabled;
++ (void)showAllWatermarks;
++ (void)hideWatermarksByClassName:(NSString *)className;
++ (NSArray *)scanCandidateWatermarkViews;
++ (NSArray *)savedWatermarkClasses;
++ (void)addWatermarkClass:(NSString *)className;
++ (void)removeWatermarkClass:(NSString *)className;
+@end
+
 // ── 预置水印类名（首次自动创建规则文件） ──
 static NSArray *presetWatermarkClasses(void) {
     return @[@"WWKWatermarkView", @"WWKWatermarkImageView",
